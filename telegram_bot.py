@@ -38,6 +38,7 @@ BOT_COMMANDS = [
     BotCommand("status", "📊 Состояние очереди"),
     BotCommand("usage", "💰 Расход токенов API"),
     BotCommand("sonnet", "✨ Следующее сообщение через Sonnet"),
+    BotCommand("lint", "🧹 Аудит и обновление вольта (Sonnet)"),
     BotCommand("help", "❔ Справка"),
 ]
 
@@ -82,7 +83,8 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "<b>Команды</b>\n"
         "/status — что в очереди\n"
         "/usage — расход токенов и стоимость\n"
-        "/sonnet [текст] — умная модель для следующего сообщения",
+        "/sonnet [текст] — умная модель для следующего сообщения\n"
+        "/lint — принудительный аудит и обновление вольта (Sonnet)",
         parse_mode=ParseMode.HTML,
     )
 
@@ -124,6 +126,22 @@ async def cmd_sonnet(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 # ─── Приём сообщений (ingest → durable-очередь) ───────────────────────────────
+
+LINT_PROMPT = (
+    "Прогони аудит вольта и наведи порядок. Шаги: вызови инструмент lint; "
+    "разбери отчёт (орфаны, битые [[ссылки]], устаревшие сущности, "
+    "необработанное сырьё в _raw/, открытые противоречия); затем безопасно "
+    "исправь — разложи накопившееся сырьё, обнови _index.md и _hot.md, почини "
+    "ссылки. Деструктивные и структурные операции — только через подтверждение. "
+    "В конце дай краткий отчёт: что нашёл и что сделал."
+)
+
+
+@auth
+async def cmd_lint(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Принудительный аудит и обновление вольта (всегда через Sonnet)."""
+    await _ingest(update, LINT_PROMPT, force_sonnet=True)
+
 
 async def _ingest(update: Update, text: str, force_sonnet: bool) -> None:
     """Персист в очередь ДО обработки + быстрый ack. Источник правды — очередь."""
@@ -224,6 +242,7 @@ def run() -> None:
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("usage", cmd_usage))
     app.add_handler(CommandHandler("sonnet", cmd_sonnet))
+    app.add_handler(CommandHandler("lint", cmd_lint))
     app.add_handler(CallbackQueryHandler(on_confirm, pattern=r"^c[yn]:\d+$"))
     app.add_handler(MessageHandler(filters.ATTACHMENT & ~filters.COMMAND, handle_attachment))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
