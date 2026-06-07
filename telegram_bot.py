@@ -151,6 +151,20 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # ─── Колбэки кнопок подтверждения ─────────────────────────────────────────────
 
+@auth
+async def handle_attachment(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Вложения пока не обрабатываются в контексте модели — отвечаем честно (p4).
+
+    Бинарные оригиналы (PDF/картинки) в вольт не пушатся: add_raw — только
+    текст, а оригиналы кладутся в _attachments/ через ФС на Desktop."""
+    await update.message.reply_text(
+        "📎 Пока я работаю только с текстом.\n"
+        "Пришли мысль или заметку текстом — разложу по вольту.\n"
+        "Файл-оригинал (PDF, картинку) положи в _attachments/ вольта через Desktop — "
+        "приём файлов в обработку появится позже."
+    )
+
+
 async def on_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     cq = update.callback_query
     await cq.answer()
@@ -211,6 +225,7 @@ def run() -> None:
     app.add_handler(CommandHandler("usage", cmd_usage))
     app.add_handler(CommandHandler("sonnet", cmd_sonnet))
     app.add_handler(CallbackQueryHandler(on_confirm, pattern=r"^c[yn]:\d+$"))
+    app.add_handler(MessageHandler(filters.ATTACHMENT & ~filters.COMMAND, handle_attachment))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logger.info("🤖 Второй-мозг-бот запущен")

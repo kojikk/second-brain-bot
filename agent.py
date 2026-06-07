@@ -45,7 +45,8 @@ def _client() -> AsyncOpenAI:
 
 # Аддитивные write-инструменты Vault MCP, принимающие idempotency_key.
 WRITE_IDEM_TOOLS = {
-    "create_note", "append_to_home", "update_memory", "update_index", "update_hot",
+    "create_note", "append_to_home", "add_raw",
+    "update_memory", "update_index", "update_hot",
 }
 
 SONNET_TRIGGERS = [
