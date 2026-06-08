@@ -123,3 +123,22 @@ async def test_resume_skips_when_declined(monkeypatch):
     assert isinstance(out, Final)
     # при отказе структурный инструмент НЕ вызывался вовсе
     assert mcp.calls == []
+
+
+@pytest.mark.asyncio
+async def test_loop_graceful_summary_on_exhaustion(monkeypatch):
+    """Упор в лимит шагов → не пустая отписка, а итоговый текст от модели."""
+    monkeypatch.setattr(agent, "MAX_STEPS", 3)
+
+    async def fake_complete(messages, model, request_type):
+        # Финальная суммаризация (после исчерпания) — без tool-блока.
+        if any("Достигнут лимит шагов" in str(m.get("content", "")) for m in messages):
+            return "Разложил часть сырья, осталось починить ссылки."
+        # Иначе бесконечно зовём инструмент, чтобы выработать бюджет шагов.
+        return '```tool\n{"tool": "search", "args": {"query": "x"}}\n```'
+    monkeypatch.setattr(agent, "_complete", fake_complete)
+
+    out = await agent.run_loop(_FakeMCP(), [{"role": "user", "content": "наведи порядок"}],
+                               "m", "k", "capture")
+    assert isinstance(out, Final)
+    assert "осталось починить ссылки" in out.text

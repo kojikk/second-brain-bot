@@ -153,6 +153,25 @@ async def _complete(messages: list[dict], model: str, request_type: str) -> str:
     return (resp.choices[0].message.content or "") if resp.choices else ""
 
 
+async def _force_final_summary(messages: list[dict], model: str,
+                               request_type: str) -> str:
+    """Бюджет шагов исчерпан: попросить модель подвести итог текстом (без инструментов).
+
+    Так пользователь получает частичный отчёт о проделанном, а не пустую
+    отписку «не завершил». Любой ```tool```-блок в ответе игнорируется.
+    """
+    messages.append({
+        "role": "user",
+        "content": "[system] Достигнут лимит шагов — инструменты больше НЕ вызывай. "
+                   "Дай пользователю краткий финальный ответ обычным текстом: что "
+                   "успел сделать и что осталось незавершённым.",
+    })
+    reply = await _complete(messages, model, request_type)
+    # Срезаем возможный tool-блок, оставляя только текст для пользователя.
+    text = re.sub(r"```tool\s*.*?```", "", reply, flags=re.DOTALL).strip()
+    return text
+
+
 async def run_loop(mcp: MCPClient, messages: list[dict], model: str,
                    item_key: str, request_type: str) -> Final | Confirm:
     """Прогнать луп до финального ответа или паузы на подтверждение.
@@ -190,6 +209,10 @@ async def run_loop(mcp: MCPClient, messages: list[dict], model: str,
         logger.info("step[%d] %s(%s) → %s", step, name, list(args.keys()), result[:80])
         messages.append({"role": "user", "content": f"[tool result] {result}"})
 
+    # Шаги исчерпаны — вместо выброса работы просим итоговый отчёт текстом.
+    summary = await _force_final_summary(messages, model, request_type)
+    if summary:
+        return Final("⚠️ Лимит шагов исчерпан, вот промежуточный итог:\n\n" + summary)
     return Final("⚠️ Агент не завершил задачу за отведённые шаги.")
 
 

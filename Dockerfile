@@ -7,7 +7,12 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# Зависимости отдельным слоем для кэша.
+# Системные зависимости: ffmpeg для конвертации OGG/Opus → WAV
+# (apinet не принимает OGG на /audio/transcriptions).
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python-зависимости отдельным слоем для кэша.
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 

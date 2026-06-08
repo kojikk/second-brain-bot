@@ -6,16 +6,26 @@
 #  - egress к Telegram/Anthropic — через singbox-прокси (host:8082);
 #  - durable-очередь на persistent volume (переживает пересоздание контейнера).
 #
-# Прокси: singbox слушает 0.0.0.0:8082 на хосте. Свой compose-проект получает
-# СОБСТВЕННЫЙ bridge со своим gateway (не 172.22.0.1, как у notion-agent), поэтому
-# адресуем прокси через host-gateway-алиас, а не хардкодом IP.
+# Прокси (runtime): singbox слушает 0.0.0.0:8082 на хосте. Свой compose-проект
+# получает СОБСТВЕННЫЙ bridge со своим gateway (не 172.22.0.1, как у notion-agent),
+# поэтому адресуем прокси через host-gateway-алиас, а не хардкодом IP.
+#
+# Прокси (build): BuildKit-контейнер использует docker0 (172.17.0.1), поэтому
+# build args указывают на прокси через этот IP, а не через host-gateway.
 #
 # Vault MCP (LAN) идёт МИМО прокси. Сам MCP-клиент использует trust_env=False
 # (надёжно), а NO_PROXY ниже — defense-in-depth с ЛИТЕРАЛЬНЫМ IP Desktop, т.к.
 # httpx не матчит CIDR-подсети в NO_PROXY.
 services:
   second-brain-bot:
-    build: .
+    build:
+      context: .
+      args:
+        # Прокси для RUN-команд во время docker build (apt-get, pip install).
+        # BuildKit пробрасывает HTTP_PROXY/HTTPS_PROXY как predefined ARG автоматически.
+        - HTTP_PROXY=http://172.17.0.1:8082
+        - HTTPS_PROXY=http://172.17.0.1:8082
+        - NO_PROXY=192.168.1.50,127.0.0.1,localhost
     image: second-brain-bot:latest
     container_name: second-brain-bot
     restart: unless-stopped

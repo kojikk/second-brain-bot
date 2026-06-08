@@ -26,6 +26,10 @@ CLAUDE_BASE_URL     = os.getenv("CLAUDE_BASE_URL", "https://apinet.cloud/v1")
 CLAUDE_MODEL        = os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 CLAUDE_SONNET_MODEL = os.getenv("CLAUDE_SONNET_MODEL", "claude-sonnet-4-6")
 
+# Транскрипция голосовых: apinet НЕ имеет whisper-канала, аудио распознаёт
+# мультимодальная модель на эндпоинте /audio/transcriptions тем же ключом/egress'ом.
+TRANSCRIBE_MODEL = os.getenv("TRANSCRIBE_MODEL", "gemini-2.5-flash")
+
 # ─── Telegram ─────────────────────────────────────────────────────────────────
 TELEGRAM_BOT_TOKEN       = _read_secret(os.getenv("TELEGRAM_BOT_TOKEN"), "TELEGRAM_BOT_TOKEN_FILE")
 TELEGRAM_ALLOWED_USER_ID = int(os.getenv("TELEGRAM_ALLOWED_USER_ID", "0"))
@@ -44,7 +48,7 @@ STRUCTURAL_TOOLS = {"move", "promote", "soft_delete"}
 
 # ─── Надёжность / очередь ─────────────────────────────────────────────────────
 QUEUE_DB_PATH      = os.getenv("QUEUE_DB_PATH", "/app/data/queue.db")
-MAX_STEPS          = int(os.getenv("MAX_STEPS", "12"))
+MAX_STEPS          = int(os.getenv("MAX_STEPS", "20"))
 WORKER_POLL_SEC    = float(os.getenv("WORKER_POLL_SEC", "1.0"))
 MCP_RETRY_BASE_SEC = float(os.getenv("MCP_RETRY_BASE_SEC", "5"))
 MCP_RETRY_MAX_SEC  = float(os.getenv("MCP_RETRY_MAX_SEC", "300"))

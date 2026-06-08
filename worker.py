@@ -41,6 +41,19 @@ def _backoff(attempts: int) -> float:
     return min(MCP_RETRY_BASE_SEC * (2 ** max(0, attempts - 1)), MCP_RETRY_MAX_SEC)
 
 
+def _user_error_message(err: str) -> str:
+    """Перевести исключение в дружелюбный текст для пользователя.
+
+    Частый кейс — apinet вернул 402 «Insufficient USD balance»: это не баг, а
+    пустой баланс. Не пугаем сырым JSON, а подсказываем пополнить.
+    """
+    low = err.lower()
+    if "insufficient" in low and "balance" in low or "402" in err:
+        return ("💳 На балансе apinet закончились средства — пополни баланс, "
+                "и я продолжу обработку.")
+    return f"❌ Ошибка обработки: {err}"
+
+
 async def _send(bot, chat_id: int, md: str) -> None:
     """Отправить ответ агента/markdown как Telegram-HTML (с фолбэком в plain)."""
     try:
@@ -134,4 +147,4 @@ async def run_worker(bot, mcp: MCPClient, brain: Brain) -> None:
         except Exception as e:
             logger.exception("обработка элемента %s упала", item["id"])
             q.mark_error(item["id"], str(e))
-            await _send(bot, item["chat_id"], f"❌ Ошибка обработки: {e}")
+            await _send(bot, item["chat_id"], _user_error_message(str(e)))

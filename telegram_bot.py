@@ -5,6 +5,10 @@ Telegram I/O второго-мозг-бота.
 (до обработки — чтобы ничего не потерялось), и доставка решений confirm-кнопок.
 Весь «разум» — в worker.py + agent.py + brain (agent.md). Бот не лезет в вольт
 напрямую, не хранит знания и не реализует правила раскладки.
+
+Исключение из «тонкости»: голосовые. Их сначала надо распознать в текст
+(transcribe.py), и только распознанный текст идёт в durable-очередь — схема
+очереди текстовая, бинарь в неё не кладётся.
 """
 import asyncio
 import logging
@@ -19,6 +23,7 @@ from telegram.ext import (
 
 import config
 import queue_db as q
+import transcribe
 import usage_tracker
 from brain import Brain
 from mcp_client import MCPClient
@@ -64,9 +69,10 @@ def auth(func):
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🧠 <b>Второй мозг</b>\n"
-        "<i>Пиши поток мыслей — сохраню и разложу по вольту.</i>\n"
+        "<i>Пиши поток мыслей или шли голосовое — сохраню и разложу по вольту.</i>\n"
         f"{'─' * 12}\n"
         "▸ ничего не теряется (durable-очередь)\n"
+        "▸ голосовые распознаю в текст\n"
         "▸ структурные правки — с подтверждением\n\n"
         "/status · /usage · /sonnet · /help",
         parse_mode=ParseMode.HTML,
@@ -78,8 +84,8 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "❔ <b>Как пользоваться</b>\n"
         f"{'─' * 12}\n"
-        "Просто пиши — я кладу сообщение в надёжную очередь и разбираю его\n"
-        "агентом поверх твоего вольта (через Vault MCP).\n\n"
+        "Пиши текстом или шли голосовое — я кладу сообщение в надёжную очередь\n"
+        "и разбираю его агентом поверх твоего вольта (через Vault MCP).\n\n"
         "<b>Команды</b>\n"
         "/status — что в очереди\n"
         "/usage — расход токенов и стоимость\n"
@@ -167,17 +173,49 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await _ingest(update, text, force_sonnet=force_sonnet)
 
 
+@auth
+async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Голосовое/аудио → транскрипция → durable-очередь как обычный текст.
+
+    Распознаём ДО постановки в очередь (схема очереди текстовая, бинарь не
+    кладётся). При ошибке распознавания ничего не теряется молча — честно
+    сообщаем; пользователь может переслать текстом.
+    """
+    msg = update.message
+    media = msg.voice or msg.audio
+    if not media:
+        return
+    await msg.reply_text("🎤 Распознаю голосовое…")
+    try:
+        tg_file = await ctx.bot.get_file(media.file_id)
+        audio = bytes(await tg_file.download_as_bytearray())
+        ext = (media.mime_type or "audio/ogg").split("/")[-1].split(";")[0] or "ogg"
+        text = await transcribe.transcribe(audio, filename=f"voice.{ext}")
+    except Exception as e:
+        logger.exception("транскрипция голосового упала")
+        await msg.reply_text(f"❌ Не смог распознать голосовое: {e}")
+        return
+    if not text:
+        await msg.reply_text("🤷 Не разобрал речь в голосовом — попробуй текстом.")
+        return
+    await msg.reply_text(f"🎤 Распознал: «{text}»")
+    uid = update.effective_user.id
+    force_sonnet = uid in _sonnet_next
+    _sonnet_next.discard(uid)
+    await _ingest(update, text, force_sonnet=force_sonnet)
+
+
 # ─── Колбэки кнопок подтверждения ─────────────────────────────────────────────
 
 @auth
 async def handle_attachment(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Вложения пока не обрабатываются в контексте модели — отвечаем честно (p4).
+    """Вложения (кроме голосовых) пока не обрабатываются в контексте модели (p4).
 
     Бинарные оригиналы (PDF/картинки) в вольт не пушатся: add_raw — только
     текст, а оригиналы кладутся в _attachments/ через ФС на Desktop."""
     await update.message.reply_text(
-        "📎 Пока я работаю только с текстом.\n"
-        "Пришли мысль или заметку текстом — разложу по вольту.\n"
+        "📎 Пока я работаю с текстом и голосовыми.\n"
+        "Пришли мысль или заметку текстом (или голосовым) — разложу по вольту.\n"
         "Файл-оригинал (PDF, картинку) положи в _attachments/ вольта через Desktop — "
         "приём файлов в обработку появится позже."
     )
@@ -244,7 +282,12 @@ def run() -> None:
     app.add_handler(CommandHandler("sonnet", cmd_sonnet))
     app.add_handler(CommandHandler("lint", cmd_lint))
     app.add_handler(CallbackQueryHandler(on_confirm, pattern=r"^c[yn]:\d+$"))
-    app.add_handler(MessageHandler(filters.ATTACHMENT & ~filters.COMMAND, handle_attachment))
+    # Голосовые/аудио — ДО обработчика вложений (иначе уйдут в «работаю с текстом»).
+    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
+    app.add_handler(MessageHandler(
+        filters.ATTACHMENT & ~filters.VOICE & ~filters.AUDIO & ~filters.COMMAND,
+        handle_attachment,
+    ))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logger.info("🤖 Второй-мозг-бот запущен")
