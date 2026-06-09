@@ -1,4 +1,4 @@
-"""Агентский луп: извлечение tool-call, idempotency-инъекция, confirm-пауза."""
+"""Агентский луп: извлечение tool-call, idempotency-инъекция, confirm-пауза, thinking."""
 import json
 
 import pytest
@@ -47,6 +47,35 @@ def test_tools_description_marks_required():
     assert "path*" in desc and "content?" in desc
 
 
+# --- _extract_thinking ---
+
+def test_extract_thinking_none():
+    thinking, clean = agent._extract_thinking("просто текст без блоков")
+    assert thinking == ""
+    assert clean == "просто текст без блоков"
+
+
+def test_extract_thinking_present():
+    raw = "<thinking>я думаю над этим</thinking>\nФинальный ответ."
+    thinking, clean = agent._extract_thinking(raw)
+    assert thinking == "я думаю над этим"
+    assert clean == "Финальный ответ."
+
+
+def test_extract_thinking_multiblock():
+    raw = "<thinking>часть 1</thinking>\n```tool\n{}\n```\n<thinking>часть 2</thinking>\nОтвет."
+    thinking, clean = agent._extract_thinking(raw)
+    assert "часть 1" in thinking and "часть 2" in thinking
+    assert "<thinking>" not in clean
+
+
+def test_extract_thinking_multiline():
+    raw = "<thinking>\nстрока 1\nстрока 2\n</thinking>\nОтвет"
+    thinking, clean = agent._extract_thinking(raw)
+    assert "строка 1" in thinking
+    assert clean == "Ответ"
+
+
 class _FakeMCP:
     def __init__(self):
         self.calls = []
@@ -63,19 +92,55 @@ class _FakeMCP:
 @pytest.mark.asyncio
 async def test_loop_final_answer(monkeypatch):
     async def fake_complete(messages, model, request_type):
-        return "Готово, разложил."
+        return "", "Готово, разложил."
     monkeypatch.setattr(agent, "_complete", fake_complete)
 
     out = await agent.run_loop(_FakeMCP(), [{"role": "user", "content": "hi"}],
                                "m", "k", "capture")
     assert isinstance(out, Final)
     assert "Готово" in out.text
+    assert out.thinking == ""
+
+
+@pytest.mark.asyncio
+async def test_loop_thinking_forwarded_to_final(monkeypatch):
+    """thinking из финального шага пробрасывается в Final.thinking."""
+    async def fake_complete(messages, model, request_type):
+        return "рассуждение модели", "Финальный ответ пользователю."
+    monkeypatch.setattr(agent, "_complete", fake_complete)
+
+    out = await agent.run_loop(_FakeMCP(), [{"role": "user", "content": "hi"}],
+                               "m", "k", "capture")
+    assert isinstance(out, Final)
+    assert out.thinking == "рассуждение модели"
+    assert "Финальный ответ" in out.text
+
+
+@pytest.mark.asyncio
+async def test_loop_thinking_discarded_for_tool_steps(monkeypatch):
+    """thinking промежуточных шагов не попадает в финальный Final."""
+    step = [0]
+
+    async def fake_complete(messages, model, request_type):
+        step[0] += 1
+        if step[0] == 1:
+            # Промежуточный шаг: есть thinking + tool-блок
+            return "промежуточное размышление", '```tool\n{"tool": "search", "args": {"query": "x"}}\n```'
+        # Финальный шаг: другое thinking + текст
+        return "финальное размышление", "Вот результат."
+    monkeypatch.setattr(agent, "_complete", fake_complete)
+
+    out = await agent.run_loop(_FakeMCP(), [{"role": "user", "content": "найди x"}],
+                               "m", "k", "capture")
+    assert isinstance(out, Final)
+    assert out.thinking == "финальное размышление"
+    assert "промежуточное" not in out.thinking
 
 
 @pytest.mark.asyncio
 async def test_loop_pauses_on_structural_confirm(monkeypatch):
     replies = iter([
-        '```tool\n{"tool": "soft_delete", "args": {"path": "x.md", "confirm": true}}\n```',
+        ("", '```tool\n{"tool": "soft_delete", "args": {"path": "x.md", "confirm": true}}\n```'),
     ])
 
     async def fake_complete(messages, model, request_type):
@@ -95,7 +160,7 @@ async def test_loop_pauses_on_structural_confirm(monkeypatch):
 @pytest.mark.asyncio
 async def test_resume_applies_when_approved(monkeypatch):
     async def fake_complete(messages, model, request_type):
-        return "Удалил, перенёс в .trash."
+        return "", "Удалил, перенёс в .trash."
     monkeypatch.setattr(agent, "_complete", fake_complete)
 
     mcp = _FakeMCP()
@@ -111,7 +176,7 @@ async def test_resume_applies_when_approved(monkeypatch):
 @pytest.mark.asyncio
 async def test_resume_skips_when_declined(monkeypatch):
     async def fake_complete(messages, model, request_type):
-        return "Окей, отменил."
+        return "", "Окей, отменил."
     monkeypatch.setattr(agent, "_complete", fake_complete)
 
     mcp = _FakeMCP()
@@ -133,9 +198,9 @@ async def test_loop_graceful_summary_on_exhaustion(monkeypatch):
     async def fake_complete(messages, model, request_type):
         # Финальная суммаризация (после исчерпания) — без tool-блока.
         if any("Достигнут лимит шагов" in str(m.get("content", "")) for m in messages):
-            return "Разложил часть сырья, осталось починить ссылки."
+            return "", "Разложил часть сырья, осталось починить ссылки."
         # Иначе бесконечно зовём инструмент, чтобы выработать бюджет шагов.
-        return '```tool\n{"tool": "search", "args": {"query": "x"}}\n```'
+        return "", '```tool\n{"tool": "search", "args": {"query": "x"}}\n```'
     monkeypatch.setattr(agent, "_complete", fake_complete)
 
     out = await agent.run_loop(_FakeMCP(), [{"role": "user", "content": "наведи порядок"}],

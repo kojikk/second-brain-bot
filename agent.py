@@ -19,7 +19,7 @@ import hashlib
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from openai import AsyncOpenAI
 
@@ -85,6 +85,7 @@ _PROTOCOL = """\
 @dataclass
 class Final:
     text: str
+    thinking: str = field(default="")
 
 
 @dataclass
@@ -114,10 +115,17 @@ def _tools_description(tools: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _strip_thinking(text: str) -> str:
-    """Удалить <thinking>...</thinking> блоки, которые могут просачиваться через
-    apinet-прокси от моделей с расширенным reasoning-режимом."""
-    return re.sub(r"<thinking>.*?</thinking>", "", text, flags=re.DOTALL).strip()
+def _extract_thinking(text: str) -> tuple[str, str]:
+    """Извлечь <thinking>...</thinking> блоки из ответа модели.
+
+    Возвращает (thinking_text, clean_text): thinking — склеенные размышления,
+    clean — текст без блоков. apinet может проксировать модели с extended
+    thinking, которые вставляют эти блоки в ответ как обычный текст.
+    """
+    parts = re.findall(r"<thinking>(.*?)</thinking>", text, flags=re.DOTALL)
+    clean = re.sub(r"<thinking>.*?</thinking>", "", text, flags=re.DOTALL).strip()
+    thinking = "\n\n".join(p.strip() for p in parts)
+    return thinking, clean
 
 
 def _extract_tool_call(text: str) -> dict | None:
@@ -152,22 +160,27 @@ async def build_seed(system_prompt: str, today: str, tools: list[dict],
     ]
 
 
-async def _complete(messages: list[dict], model: str, request_type: str) -> str:
+async def _complete(messages: list[dict], model: str,
+                    request_type: str) -> tuple[str, str]:
+    """Запросить модель и вернуть (thinking, clean_reply).
+
+    thinking — размышления из <thinking>...</thinking>, пустая строка если нет.
+    clean_reply — ответ без thinking-блоков.
+    """
     resp = await _client().chat.completions.create(
         model=model, max_tokens=2048, messages=messages, temperature=0.1,
     )
     prompt_text = "\n".join(str(m.get("content", "")) for m in messages)
     usage_tracker.record_completion(resp, model, request_type, prompt_text)
     content = (resp.choices[0].message.content or "") if resp.choices else ""
-    return _strip_thinking(content)
+    return _extract_thinking(content)
 
 
 async def _force_final_summary(messages: list[dict], model: str,
-                               request_type: str) -> str:
+                               request_type: str) -> tuple[str, str]:
     """Бюджет шагов исчерпан: попросить модель подвести итог текстом (без инструментов).
 
-    Так пользователь получает частичный отчёт о проделанном, а не пустую
-    отписку «не завершил». Любой ```tool```-блок в ответе игнорируется.
+    Возвращает (thinking, summary_text). Любой ```tool```-блок в ответе игнорируется.
     """
     messages.append({
         "role": "user",
@@ -175,10 +188,9 @@ async def _force_final_summary(messages: list[dict], model: str,
                    "Дай пользователю краткий финальный ответ обычным текстом: что "
                    "успел сделать и что осталось незавершённым.",
     })
-    reply = await _complete(messages, model, request_type)
-    # Срезаем возможный tool-блок, оставляя только текст для пользователя.
+    thinking, reply = await _complete(messages, model, request_type)
     text = re.sub(r"```tool\s*.*?```", "", reply, flags=re.DOTALL).strip()
-    return text
+    return thinking, text
 
 
 async def run_loop(mcp: MCPClient, messages: list[dict], model: str,
@@ -188,12 +200,16 @@ async def run_loop(mcp: MCPClient, messages: list[dict], model: str,
     Может бросить MCPUnavailable — worker тогда вернёт элемент в очередь.
     """
     for step in range(MAX_STEPS):
-        reply = await _complete(messages, model, request_type)
+        thinking, reply = await _complete(messages, model, request_type)
         tool_call = _extract_tool_call(reply)
 
         if tool_call is None:
-            return Final(reply.strip())
+            # Финальный ответ: прокидываем thinking пользователю.
+            return Final(reply.strip(), thinking=thinking)
 
+        # Промежуточный шаг с инструментом: thinking промежуточных шагов
+        # не показываем (обычно механический выбор инструмента) — сохраняем
+        # только clean reply в историю диалога.
         name = tool_call.get("tool", "")
         args = tool_call.get("args", {}) or {}
         messages.append({"role": "assistant", "content": reply})
@@ -219,10 +235,13 @@ async def run_loop(mcp: MCPClient, messages: list[dict], model: str,
         messages.append({"role": "user", "content": f"[tool result] {result}"})
 
     # Шаги исчерпаны — вместо выброса работы просим итоговый отчёт текстом.
-    summary = await _force_final_summary(messages, model, request_type)
+    thinking, summary = await _force_final_summary(messages, model, request_type)
     if summary:
-        return Final("⚠️ Лимит шагов исчерпан, вот промежуточный итог:\n\n" + summary)
-    return Final("⚠️ Агент не завершил задачу за отведённые шаги.")
+        return Final(
+            "⚠️ Лимит шагов исчерпан, вот промежуточный итог:\n\n" + summary,
+            thinking=thinking,
+        )
+    return Final("⚠️ Агент не завершил задачу за отведённые шаги.", thinking=thinking)
 
 
 async def resume_after_confirm(mcp: MCPClient, messages: list[dict],
