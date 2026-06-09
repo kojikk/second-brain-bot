@@ -47,6 +47,7 @@ def _client() -> AsyncOpenAI:
 WRITE_IDEM_TOOLS = {
     "create_note", "append_to_home", "add_raw",
     "update_memory", "update_index", "update_hot",
+    "mark_raw_ingested", "append_contradiction",  # двухшаговые аддитивные
 }
 
 SONNET_TRIGGERS = [

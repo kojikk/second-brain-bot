@@ -44,7 +44,7 @@ AGENT_MD_PATH = os.getenv("AGENT_MD_PATH", "_system/agent.md")
 AGENT_MD_TTL  = int(os.getenv("AGENT_MD_TTL", "900"))  # сек
 
 # Структурные/удаляющие инструменты — двухфазные (dry-run → confirm).
-STRUCTURAL_TOOLS = {"move", "promote", "soft_delete"}
+STRUCTURAL_TOOLS = {"move", "promote", "soft_delete", "edit_note"}
 
 # ─── Надёжность / очередь ─────────────────────────────────────────────────────
 QUEUE_DB_PATH      = os.getenv("QUEUE_DB_PATH", "/app/data/queue.db")
