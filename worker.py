@@ -57,11 +57,27 @@ def _user_error_message(err: str) -> str:
     return f"❌ Ошибка обработки: {err}"
 
 
-async def _send(bot, chat_id: int, md: str) -> None:
-    """Отправить ответ агента/markdown как Telegram-HTML (с фолбэком в plain)."""
+def _build_message(thinking: str, md: str) -> str:
+    """Собрать HTML-сообщение: expandable blockquote с thinking (если есть) + ответ."""
+    answer_html = to_telegram_html(md)
+    if not thinking:
+        return answer_html
+    if len(thinking) > _THINKING_MAX_LEN:
+        thinking = thinking[:_THINKING_MAX_LEN] + "\n…[обрезано]"
+    thinking_html = f"<blockquote expandable>💭 <i>Размышление</i>\n\n{html_module.escape(thinking)}</blockquote>\n\n"
+    return thinking_html + answer_html
+
+
+async def _send(bot, chat_id: int, md: str, thinking: str = "") -> None:
+    """Отправить ответ агента как Telegram-HTML (с фолбэком в plain).
+
+    Если передан thinking — вставляет expandable blockquote перед ответом
+    в том же сообщении.
+    """
+    html = _build_message(thinking, md)
     try:
         await bot.send_message(
-            chat_id, to_telegram_html(md),
+            chat_id, html,
             parse_mode=ParseMode.HTML, disable_web_page_preview=True,
         )
     except Exception as e:
@@ -70,25 +86,6 @@ async def _send(bot, chat_id: int, md: str) -> None:
             await bot.send_message(chat_id, md, disable_web_page_preview=True)
         except Exception as e2:
             logger.error("send failed entirely: %s", e2)
-
-
-async def _send_thinking(bot, chat_id: int, thinking: str) -> None:
-    """Отправить размышления модели отдельным сообщением перед финальным ответом.
-
-    Используем expandable blockquote — пользователь может развернуть или
-    свернуть. Не-фатально: сбой логируется, но не мешает основному ответу.
-    """
-    if len(thinking) > _THINKING_MAX_LEN:
-        thinking = thinking[:_THINKING_MAX_LEN] + "\n…[обрезано]"
-    escaped = html_module.escape(thinking)
-    html = f"<blockquote expandable>💭 <i>Размышление</i>\n\n{escaped}</blockquote>"
-    try:
-        await bot.send_message(
-            chat_id, html,
-            parse_mode=ParseMode.HTML, disable_web_page_preview=True,
-        )
-    except Exception as e:
-        logger.warning("thinking message failed (non-fatal): %s", e)
 
 
 def _confirm_kb(item_id: int) -> InlineKeyboardMarkup:
@@ -101,9 +98,7 @@ def _confirm_kb(item_id: int) -> InlineKeyboardMarkup:
 async def _handle_outcome(bot, item, outcome) -> None:
     chat_id = item["chat_id"]
     if isinstance(outcome, Final):
-        if outcome.thinking:
-            await _send_thinking(bot, chat_id, outcome.thinking)
-        await _send(bot, chat_id, outcome.text)
+        await _send(bot, chat_id, outcome.text, thinking=outcome.thinking)
         q.mark_done(item["id"])
     elif isinstance(outcome, Confirm):
         q.suspend_for_confirm(
