@@ -1,14 +1,14 @@
 """
 Транскрипция голосовых сообщений Telegram.
 
-apinet.cloud НЕ принимает OGG/Opus на /audio/transcriptions — только WAV/MP3.
-Поэтому голосовые (Telegram отдаёт OGG) конвертируются в WAV через ffmpeg
-(системная зависимость, добавлена в Dockerfile) перед отправкой.
+apinet.cloud НЕ реализует /audio/transcriptions (возвращает «not implemented»).
+Вместо этого аудио отправляется через /chat/completions с content-type
+input_audio — тот же эндпоинт, что работает для текстового чата.
 
-Модель: gemini-2.5-flash (у apinet нет whisper-канала; аудио распознаёт
-мультимодальный Gemini). Идёт тем же ключом и egress'ом (singbox), что и чат.
+Голосовые Telegram приходят в OGG/Opus; конвертируем в WAV 16kHz через ffmpeg
+(добавлен в Dockerfile), потом base64-кодируем и кладём в input_audio.
 """
-import io
+import base64
 import logging
 import subprocess
 
@@ -18,11 +18,13 @@ from config import CLAUDE_API_KEY, CLAUDE_BASE_URL, TRANSCRIBE_MODEL
 
 logger = logging.getLogger(__name__)
 
-# Ленивая инициализация (как в agent): импорт без секретов не должен падать.
 _llm: AsyncOpenAI | None = None
-
-# Форматы, которые нужно конвертировать в WAV перед отправкой.
 _OGG_EXTS = {"ogg", "oga", "opus"}
+
+_PROMPT = (
+    "Transcribe this voice message verbatim in the original language. "
+    "Output only the transcription text, no explanations or commentary."
+)
 
 
 def _client() -> AsyncOpenAI:
@@ -58,19 +60,30 @@ def _to_wav(audio: bytes) -> bytes:
 async def transcribe(audio: bytes, filename: str = "voice.ogg") -> str:
     """Распознать речь из аудио-байтов. Возвращает текст (может быть пустым).
 
-    Бросает исключение при сетевой/биллинговой ошибке — вызывающий решает,
-    как сообщить пользователю.
+    Использует chat/completions с multimodal input_audio вместо
+    /audio/transcriptions, который на apinet не реализован.
+    Бросает исключение при сетевой/биллинговой ошибке.
     """
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "ogg"
     if ext in _OGG_EXTS:
         audio = _to_wav(audio)
-        filename = filename.rsplit(".", 1)[0] + ".wav"
 
-    buf = io.BytesIO(audio)
-    buf.name = filename  # openai-SDK берёт расширение из .name для content-type
-    resp = await _client().audio.transcriptions.create(
-        model=TRANSCRIBE_MODEL, file=buf,
+    audio_b64 = base64.b64encode(audio).decode()
+    resp = await _client().chat.completions.create(
+        model=TRANSCRIBE_MODEL,
+        max_tokens=1024,
+        temperature=0,
+        messages=[{
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_audio",
+                    "input_audio": {"data": audio_b64, "format": "wav"},
+                },
+                {"type": "text", "text": _PROMPT},
+            ],
+        }],
     )
-    text = (getattr(resp, "text", "") or "").strip()
+    text = (resp.choices[0].message.content or "").strip() if resp.choices else ""
     logger.info("transcribe: %d байт аудио → %d символов текста", len(audio), len(text))
     return text
