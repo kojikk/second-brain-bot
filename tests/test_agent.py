@@ -76,6 +76,36 @@ def test_extract_thinking_multiline():
     assert clean == "Ответ"
 
 
+# --- decide_model: Sonnet 4.6 база, thinking для тяжёлого ---
+
+def test_decide_model_default_is_base():
+    assert agent.decide_model("запиши мысль про кофе") == agent.CLAUDE_MODEL
+
+
+def test_decide_model_triggers_thinking():
+    assert agent.decide_model("проанализируй мой план") == agent.CLAUDE_THINKING_MODEL
+
+
+def test_decide_model_force_thinking():
+    assert agent.decide_model("привет", force_thinking=True) == agent.CLAUDE_THINKING_MODEL
+
+
+def test_graph_upsert_gets_idempotency():
+    args = agent._inject_idempotency("graph_upsert", {"edges": []}, "tg:1:2")
+    assert args["idempotency_key"].startswith("tg:1:2:")
+
+
+@pytest.mark.asyncio
+async def test_build_seed_hides_graph_export():
+    tools = [
+        {"name": "search", "description": "", "inputSchema": {}},
+        {"name": "graph_export", "description": "", "inputSchema": {}},
+    ]
+    seed = await agent.build_seed("мозг", "2026-06-12", tools, "привет")
+    assert "graph_export" not in seed[0]["content"]
+    assert "search" in seed[0]["content"]
+
+
 class _FakeMCP:
     def __init__(self):
         self.calls = []
@@ -188,6 +218,44 @@ async def test_resume_skips_when_declined(monkeypatch):
     assert isinstance(out, Final)
     # при отказе структурный инструмент НЕ вызывался вовсе
     assert mcp.calls == []
+
+
+@pytest.mark.asyncio
+async def test_loop_nudges_when_no_vault_consult(monkeypatch):
+    """Финал без единого инструмента → один пуш «сверься с вольтом» → инструмент → финал."""
+    step = [0]
+
+    async def fake_complete(messages, model, request_type):
+        step[0] += 1
+        if step[0] == 1:
+            return "", "Отвечаю из головы, не глядя в вольт."
+        if step[0] == 2:
+            # после пуша модель одумалась и пошла в вольт
+            assert any("не сверившись с вольтом" in str(m.get("content", ""))
+                       for m in messages)
+            return "", '```tool\n{"tool": "graph_query", "args": {"question": "x"}}\n```'
+        return "", "Теперь отвечаю по вольту."
+    monkeypatch.setattr(agent, "_complete", fake_complete)
+
+    mcp = _FakeMCP()
+    out = await agent.run_loop(mcp, [{"role": "user", "content": "что у меня по X?"}],
+                               "m", "k", "capture")
+    assert isinstance(out, Final)
+    assert "по вольту" in out.text
+    assert ("graph_query", {"question": "x"}) in [(n, a) for n, a in mcp.calls]
+
+
+@pytest.mark.asyncio
+async def test_loop_nudges_only_once(monkeypatch):
+    """Если модель упорно финалит без инструментов — второй финал отдаём как есть."""
+    async def fake_complete(messages, model, request_type):
+        return "", "Упорно отвечаю без вольта."
+    monkeypatch.setattr(agent, "_complete", fake_complete)
+
+    out = await agent.run_loop(_FakeMCP(), [{"role": "user", "content": "hi"}],
+                               "m", "k", "capture")
+    assert isinstance(out, Final)
+    assert "Упорно" in out.text
 
 
 @pytest.mark.asyncio

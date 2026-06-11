@@ -51,6 +51,12 @@ services:
       - CLAUDE_API_KEY_FILE=/run/secrets/claude_api_key
       - QUEUE_DB_PATH=/app/data/queue.db
       - USAGE_DB_PATH=/app/data/usage.db
+      - GRAPH_DIR=/app/data/graph
+    # Mini App «Граф»: Caddy (ingress) проксирует brain.kojikk.ru →
+    # host.docker.internal:8090. Наружу порт не торчит — роутер пробрасывает
+    # только 80/8443 на caddy; 8090 виден лишь хосту и LAN.
+    ports:
+      - "8090:8090"
     secrets:
       - mcp_token
       - telegram_token

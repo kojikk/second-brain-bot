@@ -21,10 +21,12 @@ def _read_secret(value: str | None, file_env: str) -> str | None:
 
 
 # ─── LLM (Claude через apinet, OpenAI-совместимый) ────────────────────────────
-CLAUDE_API_KEY      = _read_secret(os.getenv("CLAUDE_API_KEY"), "CLAUDE_API_KEY_FILE")
-CLAUDE_BASE_URL     = os.getenv("CLAUDE_BASE_URL", "https://apinet.cloud/v1")
-CLAUDE_MODEL        = os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
-CLAUDE_SONNET_MODEL = os.getenv("CLAUDE_SONNET_MODEL", "claude-sonnet-4-6")
+# Базовая модель — Sonnet 4.6; «тяжёлый» режим — та же модель с extended thinking
+# (apinet выставляет её отдельным id с суффиксом -thinking).
+CLAUDE_API_KEY        = _read_secret(os.getenv("CLAUDE_API_KEY"), "CLAUDE_API_KEY_FILE")
+CLAUDE_BASE_URL       = os.getenv("CLAUDE_BASE_URL", "https://apinet.cloud/v1")
+CLAUDE_MODEL          = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
+CLAUDE_THINKING_MODEL = os.getenv("CLAUDE_THINKING_MODEL", "claude-sonnet-4-6-thinking")
 
 # Транскрипция голосовых: apinet НЕ имеет whisper-канала, аудио распознаёт
 # мультимодальная модель на эндпоинте /audio/transcriptions тем же ключом/egress'ом.
@@ -46,6 +48,16 @@ AGENT_MD_TTL  = int(os.getenv("AGENT_MD_TTL", "900"))  # сек
 # Структурные/удаляющие инструменты — двухфазные (dry-run → confirm).
 STRUCTURAL_TOOLS = {"move", "promote", "soft_delete", "edit_note"}
 
+# ─── Mini App «Граф» ──────────────────────────────────────────────────────────
+# Встроенный HTTP-сервер отдаёт интерактивный граф вольта как Telegram Mini App.
+# GRAPH_PUBLIC_URL — внешний HTTPS-адрес (Caddy на kojikk-server); если пуст,
+# команда /graph честно скажет, что просмотрщик не настроен.
+GRAPH_PORT       = int(os.getenv("GRAPH_PORT", "8090"))
+GRAPH_PUBLIC_URL = os.getenv("GRAPH_PUBLIC_URL", "").rstrip("/")
+GRAPH_DIR        = os.getenv("GRAPH_DIR", "/app/data/graph")
+# Свежесть auth-подписи Mini App (initData) в секундах.
+GRAPH_AUTH_MAX_AGE = int(os.getenv("GRAPH_AUTH_MAX_AGE", str(24 * 3600)))
+
 # ─── Надёжность / очередь ─────────────────────────────────────────────────────
 QUEUE_DB_PATH      = os.getenv("QUEUE_DB_PATH", "/app/data/queue.db")
 MAX_STEPS          = int(os.getenv("MAX_STEPS", "20"))
@@ -59,8 +71,9 @@ TIMEZONE = os.getenv("TIMEZONE", "Europe/Moscow")
 
 # ─── Учёт расхода токенов ─────────────────────────────────────────────────────
 PRICING = {
-    "claude-sonnet-4-6":         {"input": 3.00, "output": 15.00},
-    "claude-haiku-4-5-20251001": {"input": 1.00, "output": 5.00},
+    "claude-sonnet-4-6":          {"input": 3.00, "output": 15.00},
+    "claude-sonnet-4-6-thinking": {"input": 3.00, "output": 15.00},
+    "claude-haiku-4-5-20251001":  {"input": 1.00, "output": 5.00},
 }
 USAGE_SOURCE       = os.getenv("USAGE_SOURCE", "estimate")
 CHARS_PER_TOKEN    = float(os.getenv("CHARS_PER_TOKEN", "3.5"))

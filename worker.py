@@ -52,9 +52,9 @@ def _user_error_message(err: str) -> str:
     """
     low = err.lower()
     if "insufficient" in low and "balance" in low or "402" in err:
-        return ("💳 На балансе apinet закончились средства — пополни баланс, "
+        return ("На балансе apinet закончились средства — пополни, "
                 "и я продолжу обработку.")
-    return f"❌ Ошибка обработки: {err}"
+    return f"Не получилось обработать: {err}"
 
 
 def _build_message(thinking: str, md: str) -> str:
@@ -64,7 +64,7 @@ def _build_message(thinking: str, md: str) -> str:
         return answer_html
     if len(thinking) > _THINKING_MAX_LEN:
         thinking = thinking[:_THINKING_MAX_LEN] + "\n…[обрезано]"
-    thinking_html = f"<blockquote expandable>💭 <i>Размышление</i>\n\n{html_module.escape(thinking)}</blockquote>\n\n"
+    thinking_html = f"<blockquote expandable><i>Размышление</i>\n\n{html_module.escape(thinking)}</blockquote>\n\n"
     return thinking_html + answer_html
 
 
@@ -90,8 +90,8 @@ async def _send(bot, chat_id: int, md: str, thinking: str = "") -> None:
 
 def _confirm_kb(item_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Да", callback_data=f"cy:{item_id}"),
-        InlineKeyboardButton("✖️ Отмена", callback_data=f"cn:{item_id}"),
+        InlineKeyboardButton("Подтвердить", callback_data=f"cy:{item_id}"),
+        InlineKeyboardButton("Отмена", callback_data=f"cn:{item_id}"),
     ]])
 
 
@@ -107,7 +107,7 @@ async def _handle_outcome(bot, item, outcome) -> None:
             json.dumps(outcome.pending_tool, ensure_ascii=False),
         )
         plan = to_telegram_html(
-            f"⚠️ **Требуется подтверждение**\n\n{outcome.plan_text}"
+            f"**Нужно подтверждение**\n\n{outcome.plan_text}"
         )
         await bot.send_message(
             chat_id, plan, parse_mode=ParseMode.HTML,
@@ -158,7 +158,7 @@ async def run_worker(bot, mcp: MCPClient, brain: Brain) -> None:
             if not item["offline_notified"]:
                 await _send(
                     bot, item["chat_id"],
-                    "📥 Сохранил. Разложу, когда вернётся доступ к вольту "
+                    "Сохранил. Разложу, когда вернётся доступ к вольту "
                     "(Desktop сейчас недоступен).",
                 )
                 q.mark_offline_notified(item["id"])

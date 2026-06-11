@@ -164,21 +164,20 @@ def format_usage_report() -> str:
     budget = MONTHLY_BUDGET_USD
     pct = (spent / budget * 100) if budget else 0
 
-    lines = ["📊 **Расход API**", "---"]
+    lines = ["**Расход API**"]
 
     if last:
         model_short = last["model"].split("/")[-1]
         lines.append(
-            "**Последний запрос**\n"
-            f"▸ {model_short} · {last['request_type']} · "
+            f"последний запрос — {model_short} · {last['request_type']} · "
             f"{_fmt_int(last['total_tokens'])} ток · ${last['cost_usd']:.4f}"
         )
     else:
-        lines.append("**Последний запрос** — *нет данных*")
+        lines.append("последний запрос — *нет данных*")
 
-    lines.append("\n**Сутки**\n" f"▸ {day['n']} запр · {_fmt_int(day['tt'])} ток · ${day['cost']:.2f}")
-    lines.append("\n**Неделя**\n" f"▸ {week['n']} запр · {_fmt_int(week['tt'])} ток · ${week['cost']:.2f}")
-    lines.append(f"\n◆ **Бюджет месяца:** ${spent:.2f} / ${budget:.2f} ({pct:.0f}%)")
+    lines.append(f"сутки — {day['n']} запр · {_fmt_int(day['tt'])} ток · ${day['cost']:.2f}")
+    lines.append(f"неделя — {week['n']} запр · {_fmt_int(week['tt'])} ток · ${week['cost']:.2f}")
+    lines.append(f"\n**Бюджет месяца:** ${spent:.2f} / ${budget:.2f} ({pct:.0f}%)")
     if USAGE_SOURCE == "estimate":
         lines.append("\n*Токены — локальная оценка (apinet присылает недостоверный usage).*")
     return "\n".join(lines)
