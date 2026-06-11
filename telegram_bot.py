@@ -19,6 +19,7 @@ from telegram import (
     Update, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo,
 )
 from telegram.constants import ParseMode
+from telegram.request import HTTPXRequest
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
     filters, ContextTypes,
@@ -334,9 +335,13 @@ async def _post_shutdown(app: Application) -> None:
 
 def run() -> None:
     config.validate()
+    # connection_pool_size=8: воркер и поллинг делят один httpx-клиент;
+    # при pool_size=1 (дефолт) pool переполняется и бот зависает навечно.
+    request = HTTPXRequest(connection_pool_size=8, pool_timeout=15.0)
     app = (
         Application.builder()
         .token(config.TELEGRAM_BOT_TOKEN)
+        .request(request)
         .post_init(_post_init)
         .post_shutdown(_post_shutdown)
         .build()
