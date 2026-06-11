@@ -185,8 +185,15 @@ async def _complete(messages: list[dict], model: str,
     )
     prompt_text = "\n".join(str(m.get("content", "")) for m in messages)
     usage_tracker.record_completion(resp, model, request_type, prompt_text)
-    content = (resp.choices[0].message.content or "") if resp.choices else ""
-    return _extract_thinking(content)
+    msg = resp.choices[0].message if resp.choices else None
+    content = (msg.content if msg else "") or ""
+    thinking, clean = _extract_thinking(content)
+    # apinet отдаёт extended thinking отдельным полем reasoning_content
+    # (проверено вживую на claude-sonnet-4-6-thinking), а не <thinking>-блоками.
+    reasoning = (getattr(msg, "reasoning_content", None) or "").strip() if msg else ""
+    if reasoning and not thinking:
+        thinking = reasoning
+    return thinking, clean
 
 
 async def _force_final_summary(messages: list[dict], model: str,

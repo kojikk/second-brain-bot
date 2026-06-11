@@ -106,6 +106,30 @@ async def test_build_seed_hides_graph_export():
     assert "search" in seed[0]["content"]
 
 
+@pytest.mark.asyncio
+async def test_complete_reads_reasoning_content(monkeypatch):
+    """apinet кладёт extended thinking в message.reasoning_content — не теряем его."""
+    from types import SimpleNamespace
+
+    fake_resp = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+        content="Париж.", reasoning_content="думаю про столицы\n"))])
+
+    class _FakeCompletions:
+        async def create(self, **kw):
+            return fake_resp
+
+    monkeypatch.setattr(agent, "_client", lambda: SimpleNamespace(
+        chat=SimpleNamespace(completions=_FakeCompletions())))
+    monkeypatch.setattr(agent.usage_tracker, "record_completion",
+                        lambda *a, **kw: None)
+
+    thinking, clean = await agent._complete(
+        [{"role": "user", "content": "столица Франции?"}],
+        "claude-sonnet-4-6-thinking", "capture")
+    assert thinking == "думаю про столицы"
+    assert clean == "Париж."
+
+
 class _FakeMCP:
     def __init__(self):
         self.calls = []
