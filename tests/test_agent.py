@@ -107,6 +107,43 @@ async def test_build_seed_hides_graph_export():
 
 
 @pytest.mark.asyncio
+async def test_build_seed_with_history_and_prefetch():
+    """История — перед сообщением; префетч — после, как настоящие tool-шаги."""
+    seed = await agent.build_seed(
+        "мозг", "2026-06-12", [], "посоветуй фильм",
+        history=[{"role": "user", "content": "люблю нуар"},
+                 {"role": "assistant", "content": "учту"}],
+        prefetch=[("read_hot", {}, "ГОРЯЧЕЕ: проект Медиа"),
+                  ("graph_query", {"question": "посоветуй фильм"}, "Медиа.md — предпочтения")],
+    )
+    roles = [m["role"] for m in seed]
+    assert roles == ["system", "user", "assistant", "user", "assistant", "user",
+                     "assistant", "user"]
+    assert "(из недавнего диалога) люблю нуар" in seed[1]["content"]
+    assert seed[3]["content"] == "посоветуй фильм"            # текущее сообщение
+    assert '"tool": "read_hot"' in seed[4]["content"]
+    assert seed[5]["content"].startswith("[tool result] ГОРЯЧЕЕ")
+    assert "Медиа.md" in seed[7]["content"]                   # результат graph_query
+
+
+@pytest.mark.asyncio
+async def test_prefetch_satisfies_vault_guard(monkeypatch):
+    """С префетчем used_tool=True с порога — [vault-check] не дёргается зря."""
+    calls = []
+
+    async def fake_complete(messages, model, request_type):
+        calls.append(1)
+        return "", "Отвечаю с учётом вольта из префетча."
+    monkeypatch.setattr(agent, "_complete", fake_complete)
+
+    seed = await agent.build_seed("мозг", "2026-06-12", [], "вопрос",
+                                  prefetch=[("read_hot", {}, "контекст")])
+    out = await agent.run_loop(_FakeMCP(), seed, "m", "k", "capture")
+    assert isinstance(out, Final)
+    assert len(calls) == 1   # без пуша и второго захода
+
+
+@pytest.mark.asyncio
 async def test_complete_reads_reasoning_content(monkeypatch):
     """apinet кладёт extended thinking в message.reasoning_content — не теряем его."""
     from types import SimpleNamespace

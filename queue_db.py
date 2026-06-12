@@ -60,6 +60,20 @@ def init_db() -> None:
             """
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_queue_status ON queue(status, id)")
+        # Короткая диалоговая память: последние реплики чата подмешиваются в
+        # контекст агента (долгая память — это вольт, не эта таблица).
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS dialog (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id    INTEGER NOT NULL,
+                role       TEXT NOT NULL,      -- 'user' | 'assistant'
+                content    TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_dialog_chat ON dialog(chat_id, id)")
 
 
 def enqueue(idempotency_key: str, chat_id: int, user_id: int, text: str,
@@ -209,6 +223,36 @@ def set_decision(item_id: int, decision: str) -> bool:
             (decision, _now(), item_id),
         )
         return True
+
+
+# ─── Диалоговая память ────────────────────────────────────────────────────────
+
+_DIALOG_KEEP = 40          # строк на чат (≈20 обменов)
+_DIALOG_CONTENT_CAP = 1200  # символов на реплику при записи
+
+
+def log_dialog(chat_id: int, role: str, content: str) -> None:
+    """Записать реплику и подрезать хвост истории чата."""
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO dialog (chat_id, role, content, created_at) VALUES (?, ?, ?, ?)",
+            (chat_id, role, content[:_DIALOG_CONTENT_CAP], _now()),
+        )
+        conn.execute(
+            """DELETE FROM dialog WHERE chat_id=? AND id NOT IN
+               (SELECT id FROM dialog WHERE chat_id=? ORDER BY id DESC LIMIT ?)""",
+            (chat_id, chat_id, _DIALOG_KEEP),
+        )
+
+
+def recent_dialog(chat_id: int, limit: int = 6) -> list[dict]:
+    """Последние реплики чата в хронологическом порядке (для seed агента)."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT role, content FROM dialog WHERE chat_id=? ORDER BY id DESC LIMIT ?",
+            (chat_id, limit),
+        ).fetchall()
+    return [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]
 
 
 def counts() -> dict:

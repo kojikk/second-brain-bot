@@ -28,7 +28,7 @@ from brain import Brain
 from config import (
     MCP_RETRY_BASE_SEC, MCP_RETRY_MAX_SEC, TIMEZONE, WORKER_POLL_SEC,
 )
-from mcp_client import MCPClient, MCPUnavailable
+from mcp_client import MCPClient, MCPError, MCPUnavailable
 from tg_render import to_telegram_html
 
 logger = logging.getLogger(__name__)
@@ -100,6 +100,10 @@ async def _handle_outcome(bot, item, outcome) -> None:
     if isinstance(outcome, Final):
         await _send(bot, chat_id, outcome.text, thinking=outcome.thinking)
         q.mark_done(item["id"])
+        # Диалоговая память — одной парой и только на финале (не плодим
+        # дубли при ретраях/конфирмах).
+        q.log_dialog(chat_id, "user", item["text"])
+        q.log_dialog(chat_id, "assistant", outcome.text)
     elif isinstance(outcome, Confirm):
         q.suspend_for_confirm(
             item["id"],
@@ -113,6 +117,29 @@ async def _handle_outcome(bot, item, outcome) -> None:
             chat_id, plan, parse_mode=ParseMode.HTML,
             reply_markup=_confirm_kb(item["id"]), disable_web_page_preview=True,
         )
+
+
+# Стартовая сверка с вольтом, которую рантайм делает САМ до первого шага
+# модели. Урок живого репро: модель может просто заявить «в вольте пусто»,
+# не сходив туда, — поэтому контекст вольта кладём в seed механически.
+_PREFETCH_RESULT_CAP = 4000
+
+
+async def _prefetch_vault(mcp: MCPClient, user_text: str) -> list[tuple[str, dict, str]]:
+    """read_hot + graph_query по сообщению. MCPUnavailable пробрасывается (реквью)."""
+    out = []
+    for name, args in (("read_hot", {}),
+                       ("graph_query", {"question": user_text[:300]})):
+        try:
+            result = await mcp.call_tool(name, args)
+        except MCPUnavailable:
+            raise
+        except MCPError as e:
+            result = f"ошибка инструмента: {e}"
+        if len(result) > _PREFETCH_RESULT_CAP:
+            result = result[:_PREFETCH_RESULT_CAP] + "\n…[обрезано рантаймом]"
+        out.append((name, args, result))
+    return out
 
 
 async def _process(bot, mcp: MCPClient, brain: Brain, item, is_resume: bool) -> None:
@@ -129,7 +156,10 @@ async def _process(bot, mcp: MCPClient, brain: Brain, item, is_resume: bool) -> 
     else:
         brain_text = await brain.get()           # может бросить MCPUnavailable
         tools = await mcp.list_tools()           # ← до любых записей: безопасно реквью
-        seed = await agent.build_seed(brain_text, _today(), tools, item["text"])
+        history = q.recent_dialog(item["chat_id"])
+        prefetch = await _prefetch_vault(mcp, item["text"])
+        seed = await agent.build_seed(brain_text, _today(), tools, item["text"],
+                                      history=history, prefetch=prefetch)
         outcome = await agent.run_loop(mcp, seed, model, item_key, "capture")
 
     await _handle_outcome(bot, item, outcome)

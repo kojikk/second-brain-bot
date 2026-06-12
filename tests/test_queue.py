@@ -75,3 +75,26 @@ def test_confirm_flow(tmp_path):
     assert resumed is not None
     assert resumed["confirm_decision"] == "yes"
     assert resumed["status"] == "processing"
+
+# --- диалоговая память ---
+
+def test_dialog_log_and_recent(tmp_path):
+    _fresh(tmp_path)
+    q.log_dialog(1, "user", "люблю нуар")
+    q.log_dialog(1, "assistant", "учту")
+    q.log_dialog(2, "user", "чужой чат")
+    hist = q.recent_dialog(1)
+    assert [h["role"] for h in hist] == ["user", "assistant"]
+    assert hist[0]["content"] == "люблю нуар"
+    assert all("чужой" not in h["content"] for h in hist)
+
+
+def test_dialog_trims_tail_and_caps_content(tmp_path):
+    _fresh(tmp_path)
+    for i in range(60):
+        q.log_dialog(1, "user", f"сообщение {i}")
+    q.log_dialog(1, "assistant", "х" * 5000)
+    hist = q.recent_dialog(1, limit=100)
+    assert len(hist) <= q._DIALOG_KEEP
+    assert hist[-1]["content"] == "х" * q._DIALOG_CONTENT_CAP
+    assert hist[0]["content"] != "сообщение 0"  # старьё подрезано
