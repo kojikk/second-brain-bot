@@ -222,6 +222,9 @@ async def start(mcp: MCPClient) -> web.AppRunner:
         web.get("/", _index),
         web.post("/api/graph", _api_graph),
         web.post("/api/preview", _api_preview),
+        # Вендорные библиотеки viewer'а (force-graph, marked, dompurify) —
+        # отдаём сами, чтобы webview не зависел от доступности CDN из РФ.
+        web.static("/vendor", os.path.join(os.path.dirname(_WEBAPP_INDEX), "vendor")),
     ])
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()

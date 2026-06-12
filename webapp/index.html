@@ -5,118 +5,198 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>Граф вольта</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="/vendor/force-graph.min.js"></script>
+<script src="/vendor/marked.min.js"></script>
+<script src="/vendor/purify.min.js"></script>
 <style>
+  /* ── палитра: тёмный графит, приглушённые «дорогие» пастели ── */
   :root {
-    --bg: var(--tg-theme-bg-color, #131517);
-    --bg2: var(--tg-theme-secondary-bg-color, #1c1f23);
-    --text: var(--tg-theme-text-color, #e8eaed);
-    --hint: var(--tg-theme-hint-color, #8a9097);
-    --accent: var(--tg-theme-button-color, #5b8def);
-    --accent-text: var(--tg-theme-button-text-color, #ffffff);
-    --new: #4cab6d;
-    --touched: #c99a3c;
-    --sep: color-mix(in srgb, var(--hint) 25%, transparent);
+    --bg: #141416;
+    --panel: rgba(29, 29, 33, .94);
+    --panel-solid: #1d1d21;
+    --panel-2: #26262c;
+    --border: #2c2c33;
+    --text: #d6d6dc;
+    --muted: #8b8b94;
+    --faint: #5a5a63;
+    --accent: #8f7ee0;
+    --accent-dim: rgba(143, 126, 224, .16);
+    --new: #6fae8a;
+    --touched: #c2a368;
+    --danger: #c07a7a;
+    --radius: 12px;
   }
   * { box-sizing: border-box; margin: 0; -webkit-tap-highlight-color: transparent; }
-  html, body { height: 100%; overflow: hidden; }
+  html, body { height: 100%; overflow: hidden; background: var(--bg); }
   body {
-    background: var(--bg); color: var(--text);
-    font: 15px/1.45 -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+    color: var(--text);
+    font: 14px/1.5 -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
   }
-  #canvas { position: absolute; inset: 0; touch-action: none; }
+  #graph { position: absolute; inset: 0; }
 
   /* ── верхняя панель ── */
   #top {
     position: absolute; top: 0; left: 0; right: 0; z-index: 5;
-    padding: 10px 12px 8px; display: flex; flex-direction: column; gap: 8px;
-    pointer-events: none;
+    padding: calc(env(safe-area-inset-top, 0px) + 10px) 12px 0;
+    display: flex; flex-direction: column; gap: 8px; pointer-events: none;
   }
   #top > * { pointer-events: auto; }
+  #searchbox { position: relative; }
   #search {
-    width: 100%; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--sep);
-    background: var(--bg2); color: var(--text); font-size: 15px; outline: none;
+    width: 100%; padding: 10px 14px; font-size: 14px; color: var(--text);
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: var(--radius); outline: none;
+    transition: border-color .18s ease;
   }
-  #search::placeholder { color: var(--hint); }
-  #chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  #search:focus { border-color: var(--accent); }
+  #search::placeholder { color: var(--faint); }
+  #suggest {
+    position: absolute; top: calc(100% + 6px); left: 0; right: 0;
+    background: var(--panel-solid); border: 1px solid var(--border);
+    border-radius: var(--radius); overflow: hidden; display: none;
+    box-shadow: 0 12px 32px rgba(0,0,0,.45);
+  }
+  #suggest .sug {
+    padding: 9px 14px; cursor: pointer; display: flex; gap: 8px; align-items: center;
+    border-bottom: 1px solid var(--border); font-size: 13.5px;
+  }
+  #suggest .sug:last-child { border-bottom: 0; }
+  #suggest .sug:active, #suggest .sug:hover { background: var(--panel-2); }
+  #suggest .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  #suggest .kind { margin-left: auto; color: var(--faint); font-size: 11.5px; }
+
+  #bar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
   .chip {
-    padding: 5px 10px; border-radius: 999px; font-size: 12.5px;
-    background: var(--bg2); color: var(--hint); border: 1px solid var(--sep);
-    cursor: pointer; user-select: none; display: inline-flex; align-items: center; gap: 6px;
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 6px 11px; font-size: 12px; color: var(--muted);
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 999px; cursor: pointer; user-select: none;
+    transition: color .18s, border-color .18s, background .18s;
   }
   .chip .dot { width: 7px; height: 7px; border-radius: 50%; }
-  .chip.on { color: var(--text); border-color: var(--accent); }
-  #status { font-size: 12px; color: var(--hint); }
-  #status .stale { color: var(--touched); }
+  .chip.on { color: var(--text); border-color: var(--accent); background: var(--accent-dim); }
+  .chip b { font-weight: 600; }
+  #meta {
+    margin-left: auto; font-size: 11.5px; color: var(--faint);
+    background: var(--panel); border: 1px solid var(--border);
+    padding: 6px 11px; border-radius: 999px;
+  }
+  #meta .stale { color: var(--touched); }
 
   /* ── нижний лист ── */
   #sheet {
     position: absolute; left: 0; right: 0; bottom: 0; z-index: 6;
-    background: var(--bg2); border-radius: 14px 14px 0 0;
-    border-top: 1px solid var(--sep);
-    transform: translateY(100%); transition: transform .22s ease;
-    max-height: 62%; display: flex; flex-direction: column;
+    background: var(--panel-solid);
+    border: 1px solid var(--border); border-bottom: 0;
+    border-radius: 16px 16px 0 0;
+    transform: translateY(102%);
+    transition: transform .28s cubic-bezier(.32,.72,.33,1);
+    max-height: 68%; display: flex; flex-direction: column;
+    box-shadow: 0 -16px 48px rgba(0,0,0,.5);
   }
   #sheet.open { transform: translateY(0); }
-  #sheet-head { padding: 12px 16px 8px; flex: none; }
-  #sheet-grip {
-    width: 34px; height: 4px; border-radius: 2px; background: var(--sep);
-    margin: 0 auto 10px;
+  #sheet-head { padding: 10px 18px 10px; flex: none; cursor: pointer; }
+  #grip { width: 36px; height: 4px; border-radius: 2px; background: var(--border); margin: 0 auto 12px; }
+  #sheet-title { font-size: 16.5px; font-weight: 650; letter-spacing: .1px; word-break: break-word; }
+  #badges { display: flex; gap: 6px; margin-top: 7px; flex-wrap: wrap; }
+  .badge {
+    font-size: 11px; padding: 3px 9px; border-radius: 999px;
+    color: var(--muted); background: var(--panel-2); border: 1px solid var(--border);
   }
-  #sheet-title { font-size: 16px; font-weight: 600; word-break: break-word; }
-  #sheet-sub { font-size: 12.5px; color: var(--hint); margin-top: 2px; }
-  #sheet-body { overflow-y: auto; padding: 4px 16px 16px; }
+  .badge.acc { color: var(--accent); border-color: transparent; background: var(--accent-dim); }
+  .badge.new { color: var(--new); background: rgba(111,174,138,.12); border-color: transparent; }
+  .badge.touched { color: var(--touched); background: rgba(194,163,104,.12); border-color: transparent; }
+  #sheet-body { overflow-y: auto; padding: 0 18px 20px; overscroll-behavior: contain; }
+  .sec { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); margin: 14px 0 6px; }
   .conn {
-    display: flex; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--sep);
-    align-items: baseline; cursor: pointer;
+    display: flex; gap: 10px; align-items: baseline; padding: 8px 0;
+    border-bottom: 1px solid var(--border); cursor: pointer; font-size: 13.5px;
   }
   .conn:last-child { border-bottom: 0; }
-  .conn .rel { flex: none; font-size: 12px; color: var(--hint); min-width: 84px; }
+  .conn .rel { flex: none; min-width: 92px; font-size: 12px; color: var(--muted); }
   .conn .rel.sem { color: var(--accent); }
   .conn .who { word-break: break-word; }
+  .conn .who .cdot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 7px; }
   .btn {
-    display: block; width: 100%; margin: 10px 0 2px; padding: 10px;
-    border: 0; border-radius: 10px; background: var(--accent); color: var(--accent-text);
-    font-size: 15px; font-weight: 500; cursor: pointer;
+    display: block; width: 100%; margin: 14px 0 4px; padding: 11px;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--panel-2); color: var(--text);
+    font-size: 14px; font-weight: 550; cursor: pointer;
+    transition: background .18s, border-color .18s;
   }
-  .btn[disabled] { opacity: .5; }
+  .btn:active { background: var(--accent-dim); border-color: var(--accent); }
+  .btn[disabled] { opacity: .45; }
+
+  /* ── markdown-превью ── */
   #preview {
-    margin-top: 10px; padding: 10px 12px; border-radius: 10px;
-    background: var(--bg); border: 1px solid var(--sep);
-    font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    white-space: pre-wrap; word-break: break-word; color: var(--text);
-    max-height: 38vh; overflow-y: auto; display: none;
+    display: none; margin-top: 12px; padding: 14px 16px;
+    background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
+    font-size: 13.5px; line-height: 1.65; word-break: break-word;
   }
+  #preview h1, #preview h2, #preview h3, #preview h4 {
+    font-size: 14.5px; font-weight: 650; margin: 14px 0 6px; color: var(--text);
+  }
+  #preview h1 { font-size: 16px; }
+  #preview h1:first-child, #preview h2:first-child { margin-top: 0; }
+  #preview p { margin: 7px 0; }
+  #preview ul, #preview ol { margin: 7px 0; padding-left: 22px; }
+  #preview li { margin: 3px 0; }
+  #preview code {
+    font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    background: var(--panel-2); padding: 1.5px 5px; border-radius: 5px;
+  }
+  #preview pre {
+    background: var(--panel-2); border: 1px solid var(--border);
+    padding: 10px 12px; border-radius: 8px; overflow-x: auto; margin: 8px 0;
+  }
+  #preview pre code { background: none; padding: 0; }
+  #preview blockquote {
+    border-left: 2px solid var(--accent); margin: 8px 0; padding: 2px 0 2px 12px;
+    color: var(--muted);
+  }
+  #preview a { color: var(--accent); text-decoration: none; }
+  #preview a.wl { border-bottom: 1px dashed rgba(143,126,224,.5); cursor: pointer; }
+  #preview hr { border: 0; border-top: 1px solid var(--border); margin: 12px 0; }
+  #preview table { border-collapse: collapse; margin: 8px 0; }
+  #preview td, #preview th { border: 1px solid var(--border); padding: 4px 9px; font-size: 12.5px; }
+  #preview .trunc { color: var(--faint); font-size: 12px; margin-top: 10px; }
+
+  /* ── оверлей загрузки ── */
   #overlay {
-    position: absolute; inset: 0; z-index: 10; display: flex;
-    align-items: center; justify-content: center; flex-direction: column; gap: 10px;
-    background: var(--bg); color: var(--hint); text-align: center; padding: 24px;
+    position: absolute; inset: 0; z-index: 10; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 14px;
+    background: var(--bg); color: var(--muted); text-align: center; padding: 24px;
   }
   .spin {
     width: 22px; height: 22px; border-radius: 50%;
-    border: 2px solid var(--sep); border-top-color: var(--accent);
+    border: 2px solid var(--border); border-top-color: var(--accent);
     animation: spin .8s linear infinite;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
 </style>
 </head>
 <body>
-<canvas id="canvas"></canvas>
+<div id="graph"></div>
 
 <div id="top">
-  <input id="search" type="search" placeholder="Найти узел…" autocomplete="off">
-  <div id="chips">
-    <span class="chip" id="chip-new"><span class="dot" style="background:var(--new)"></span>новые <b id="n-new">0</b></span>
-    <span class="chip" id="chip-touched"><span class="dot" style="background:var(--touched)"></span>затронутые <b id="n-touched">0</b></span>
-    <span class="chip" id="chip-labels">подписи связей</span>
+  <div id="searchbox">
+    <input id="search" type="search" placeholder="Найти узел…" autocomplete="off">
+    <div id="suggest"></div>
   </div>
-  <div id="status"></div>
+  <div id="bar">
+    <span class="chip" id="chip-new"><span class="dot" style="background:var(--new)"></span>новые <b id="n-new">0</b></span>
+    <span class="chip" id="chip-touched"><span class="dot" style="background:var(--touched)"></span>изменённые <b id="n-touched">0</b></span>
+    <span class="chip" id="chip-labels">связи</span>
+    <span id="meta"></span>
+  </div>
 </div>
 
 <div id="sheet">
   <div id="sheet-head">
-    <div id="sheet-grip"></div>
+    <div id="grip"></div>
     <div id="sheet-title"></div>
-    <div id="sheet-sub"></div>
+    <div id="badges"></div>
   </div>
   <div id="sheet-body">
     <div id="conns"></div>
@@ -131,26 +211,31 @@
 "use strict";
 const tg = window.Telegram?.WebApp;
 tg?.ready(); tg?.expand();
+tg?.setBackgroundColor?.("#141416"); tg?.setHeaderColor?.("#141416");
 
 const $ = (id) => document.getElementById(id);
-const canvas = $("canvas"), ctx = canvas.getContext("2d");
-let DPR = Math.min(window.devicePixelRatio || 1, 2);
+const DEMO = new URLSearchParams(location.search).has("demo");
 
-/* Приглушённая палитра сообществ — без неона. */
-const PALETTE = ["#5b8def","#5fae8c","#c98a5b","#a37fd1","#cd6f6f",
-                 "#5aa7c4","#b8a04e","#7f8fa6","#9f6f9c","#6c9a6c"];
-
-const state = {
-  nodes: [], edges: [], byId: new Map(),
-  diff: { new_nodes: [], touched_nodes: [], new_edges: [] },
-  newSet: new Set(), touchedSet: new Set(), newEdgeSet: new Set(),
-  selected: null, hoverEdges: [],
-  cam: { x: 0, y: 0, k: 1 },
-  filterNew: false, filterTouched: false, edgeLabels: false,
-  alpha: 0, running: false, searchTerm: "",
+/* приглушённые пастели на графите — по сообществам Louvain */
+const PALETTE = ["#9aa7c0", "#c0a98a", "#8fbba0", "#c08f9b", "#a796cf",
+                 "#8fb0c0", "#c0b88a", "#b194c0", "#c09a8a", "#8fc0b6"];
+const COL = {
+  bg: "#141416", text: "#d6d6dc", muted: "#8b8b94", faint: "#5a5a63",
+  accent: "#8f7ee0", new: "#6fae8a", touched: "#c2a368",
+  edge: "rgba(255,255,255,0.10)", panel: "#1d1d21",
 };
+const KIND_RU = { note: "заметка", org: "папка-узел", tag: "тег", concept: "концепт без страницы" };
 
-/* ── загрузка ── */
+const S = {
+  nodes: [], links: [], byId: new Map(), neighbors: new Map(),
+  newSet: new Set(), touchedSet: new Set(), newEdges: new Set(),
+  selected: null, hovered: null,
+  filterNew: false, filterTouched: false, alwaysEdgeLabels: false,
+  term: "", zoom: 1,
+};
+let Graph = null;
+
+/* ── данные ── */
 async function api(path, body) {
   const r = await fetch(path, {
     method: "POST", headers: { "Content-Type": "application/json" },
@@ -160,10 +245,41 @@ async function api(path, body) {
   return r.json();
 }
 
+function demoData() {
+  const mk = (id, kind, community, degree, entity) =>
+    ({ id, kind, label: id.replace(/\.md$/, "").split("/").pop(), entity: !!entity, degree, community });
+  const nodes = [
+    mk("Проекты/Бот/_home.md", "org", 0, 6, false), mk("Знания/AI/RAG.md", "note", 1, 5, true),
+    mk("Знания/AI/Эмбеддинги.md", "note", 1, 3, true), mk("Знания/AI/LLM.md", "note", 1, 4, true),
+    mk("Проекты/Вишлист.md", "note", 2, 4, true), mk("Проекты/Оркестратор.md", "note", 2, 3, true),
+    mk("tag:ai", "tag", 1, 3), mk("concept:graphify", "concept", 1, 1),
+    mk("Журнал/2026-06-12.md", "note", 0, 2), mk("Знания/Граф.md", "note", 1, 4, true),
+  ];
+  const e = (src, tgt, relation, layer) => ({ src, tgt, relation, layer, confidence: "extracted" });
+  const edges = [
+    e("Проекты/Бот/_home.md", "Знания/AI/RAG.md", "использует", "semantic"),
+    e("Знания/AI/RAG.md", "Знания/AI/Эмбеддинги.md", "опирается на", "semantic"),
+    e("Знания/AI/RAG.md", "Знания/AI/LLM.md", "ссылается", "derived"),
+    e("Знания/AI/LLM.md", "tag:ai", "тег", "derived"),
+    e("Знания/AI/Эмбеддинги.md", "tag:ai", "тег", "derived"),
+    e("Проекты/Вишлист.md", "Проекты/Оркестратор.md", "обслуживается", "semantic"),
+    e("Проекты/Бот/_home.md", "Журнал/2026-06-12.md", "ссылается", "derived"),
+    e("Знания/Граф.md", "concept:graphify", "вдохновлён", "semantic"),
+    e("Знания/AI/RAG.md", "Знания/Граф.md", "ссылается", "derived"),
+    e("Проекты/Бот/_home.md", "Знания/Граф.md", "визуализирует", "semantic"),
+  ];
+  return {
+    stale: false,
+    graph: { generated: new Date().toISOString(), stats: { nodes: nodes.length, edges: edges.length }, nodes, edges },
+    diff: { new_nodes: ["Знания/Граф.md"], touched_nodes: ["Знания/AI/RAG.md"],
+            new_edges: [{ src: "Проекты/Бот/_home.md", tgt: "Знания/Граф.md" }], baseline: "demo" },
+  };
+}
+
 async function load() {
   try {
-    const data = await api("/api/graph", {});
-    initGraph(data);
+    const data = DEMO ? demoData() : await api("/api/graph", {});
+    init(data);
     $("overlay").style.display = "none";
   } catch (e) {
     $("overlay-text").textContent = "Не получилось: " + e.message;
@@ -171,366 +287,342 @@ async function load() {
   }
 }
 
-function initGraph(data) {
-  const g = data.graph;
-  state.diff = data.diff || state.diff;
-  state.newSet = new Set(state.diff.new_nodes || []);
-  state.touchedSet = new Set((state.diff.touched_nodes || []));
-  state.newEdgeSet = new Set((state.diff.new_edges || []).map(e => e.src + "|" + e.tgt));
-
-  state.nodes = g.nodes.map((n, i) => ({
-    ...n,
-    x: Math.cos(i * 2.39996) * Math.sqrt(i) * 26,   /* phyllotaxis seed */
-    y: Math.sin(i * 2.39996) * Math.sqrt(i) * 26,
-    vx: 0, vy: 0,
-    r: 4 + Math.sqrt(n.degree || 1) * 2.2,
-  }));
-  state.byId = new Map(state.nodes.map(n => [n.id, n]));
-  state.edges = g.edges.filter(e => state.byId.has(e.src) && state.byId.has(e.tgt));
-
-  $("n-new").textContent = state.newSet.size;
-  $("n-touched").textContent = state.touchedSet.size;
-  const when = (g.generated || "").slice(0, 16).replace("T", " ");
-  $("status").innerHTML =
-    `${g.stats.nodes} узлов · ${g.stats.edges} связей · ${when}` +
-    (data.stale ? ` · <span class="stale">офлайн-снапшот</span>` : "");
-
-  fitCamera();
-  heat(1);
-}
-
-/* ── форс-симуляция (velocity Verlet, O(n²) — персональный масштаб) ── */
-const SPRING = 0.06, SPRING_LEN = 46, REPULSE = 900, GRAVITY = 0.015, DAMP = 0.86;
-
-function heat(a) { state.alpha = Math.max(state.alpha, a); if (!state.running) { state.running = true; requestAnimationFrame(frame); } }
-
-function tickPhysics() {
-  const N = state.nodes;
-  for (let i = 0; i < N.length; i++) {
-    const a = N[i];
-    for (let j = i + 1; j < N.length; j++) {
-      const b = N[j];
-      let dx = a.x - b.x, dy = a.y - b.y;
-      let d2 = dx * dx + dy * dy || 0.01;
-      if (d2 > 90000) continue;                 /* дальние пары не толкаются */
-      const f = REPULSE / d2;
-      const d = Math.sqrt(d2);
-      dx /= d; dy /= d;
-      a.vx += dx * f; a.vy += dy * f;
-      b.vx -= dx * f; b.vy -= dy * f;
-    }
-  }
-  for (const e of state.edges) {
-    const a = state.byId.get(e.src), b = state.byId.get(e.tgt);
-    let dx = b.x - a.x, dy = b.y - a.y;
-    const d = Math.sqrt(dx * dx + dy * dy) || 1;
-    const f = SPRING * (d - SPRING_LEN) / d;
-    a.vx += dx * f; a.vy += dy * f;
-    b.vx -= dx * f; b.vy -= dy * f;
-  }
-  for (const n of N) {
-    n.vx -= n.x * GRAVITY; n.vy -= n.y * GRAVITY;
-    if (n === dragNode) { n.vx = 0; n.vy = 0; continue; }
-    n.vx *= DAMP; n.vy *= DAMP;
-    n.x += n.vx * state.alpha; n.y += n.vy * state.alpha;
-  }
-  state.alpha *= 0.985;
-}
-
-/* ── отрисовка ── */
 function nodeColor(n) {
-  if (n.kind === "tag") return "#7f8fa6";
-  if (n.kind === "concept") return "transparent";
+  if (n.kind === "tag") return "#6e6e78";
+  if (n.kind === "concept") return COL.faint;
   return PALETTE[(n.community ?? 0) % PALETTE.length];
 }
+const nodeR = (n) => Math.min(3 + Math.sqrt(n.degree || 1) * 1.7, 14);
 
-function dimmed(n) {
-  if (state.searchTerm) return !n.label.toLowerCase().includes(state.searchTerm);
-  if (state.filterNew || state.filterTouched) {
-    return !((state.filterNew && state.newSet.has(n.id)) ||
-             (state.filterTouched && state.touchedSet.has(n.id)));
+function init(data) {
+  const g = data.graph, diff = data.diff || {};
+  S.newSet = new Set(diff.new_nodes || []);
+  S.touchedSet = new Set(diff.touched_nodes || []);
+  S.newEdges = new Set((diff.new_edges || []).map((e) => e.src + "|" + e.tgt));
+
+  S.nodes = g.nodes.map((n) => ({ ...n, r: nodeR(n) }));
+  S.byId = new Map(S.nodes.map((n) => [n.id, n]));
+  S.links = g.edges
+    .filter((e) => S.byId.has(e.src) && S.byId.has(e.tgt))
+    .map((e) => ({ source: e.src, target: e.tgt, relation: e.relation,
+                   layer: e.layer, isNew: S.newEdges.has(e.src + "|" + e.tgt) }));
+  S.neighbors = new Map(S.nodes.map((n) => [n.id, new Set()]));
+  for (const l of S.links) {
+    S.neighbors.get(l.source).add(l.target);
+    S.neighbors.get(l.target).add(l.source);
   }
-  if (state.selected) {
-    return n.id !== state.selected.id &&
-           !state.hoverEdges.some(e => e.src === n.id || e.tgt === n.id);
+
+  $("n-new").textContent = S.newSet.size;
+  $("n-touched").textContent = S.touchedSet.size;
+  const when = (g.generated || "").slice(0, 16).replace("T", " ");
+  $("meta").innerHTML = `${g.stats.nodes} узлов · ${g.stats.edges} связей` +
+    (data.stale ? ` · <span class="stale">офлайн</span>` : "");
+  $("meta").title = when;
+
+  buildGraph();
+}
+
+/* ── force-graph: плавная d3-физика вместо самописной ── */
+function buildGraph() {
+  Graph = ForceGraph()($("graph"))
+    .graphData({ nodes: S.nodes, links: S.links })
+    .backgroundColor(COL.bg)
+    .nodeId("id")
+    .nodeVal((n) => n.r)
+    .autoPauseRedraw(false)
+    .warmupTicks(150)
+    .cooldownTime(5000)
+    .d3VelocityDecay(0.55)              /* спокойнее: меньше дрожи и разлёта */
+    .nodeCanvasObject(paintNode)
+    .nodePointerAreaPaint((n, color, ctx) => {
+      ctx.fillStyle = color;
+      ctx.beginPath(); ctx.arc(n.x, n.y, n.r + 6, 0, 2 * Math.PI); ctx.fill();
+    })
+    .linkColor((l) => linkStyle(l).color)
+    .linkWidth((l) => linkStyle(l).width)
+    .linkCanvasObjectMode(() => "after")
+    .linkCanvasObject(paintLinkLabel)
+    .onNodeClick((n) => select(n))
+    .onNodeHover((n) => { S.hovered = n || null; })
+    .onBackgroundClick(() => select(null))
+    .onNodeDragEnd((n) => { n.fx = null; n.fy = null; })  /* не прибивать узлы */
+    .onZoom(({ k }) => { S.zoom = k; })
+    .onEngineStop(() => fitOnce(600));
+
+  /* warmupTicks уже уложил граф — показываем сразу по центру, не ждём cooldown */
+  setTimeout(() => fitOnce(500), 400);
+  $("graph").addEventListener("pointerdown", () => { S._userMoved = true; }, { once: true });
+
+  /* разреженный, дышащий layout: сильнее отталкивание, длиннее связи */
+  Graph.d3Force("charge").strength(-170).distanceMax(420);
+  Graph.d3Force("link")
+    .distance((l) => (l.layer === "semantic" ? 95 : 60))
+    .strength((l) => (l.layer === "semantic" ? 0.7 : 0.35));
+  Graph.d3Force("center").strength(0.04);
+}
+
+function fitOnce(ms) {
+  /* первый показ + дофит после остановки движка, пока юзер не взял управление */
+  if (S._userMoved) return;
+  Graph.zoomToFit(ms, Math.min(innerWidth, innerHeight) * 0.12);
+}
+
+function isDim(n) {
+  if (S.term) return !n.label.toLowerCase().includes(S.term);
+  if (S.filterNew || S.filterTouched) {
+    return !((S.filterNew && S.newSet.has(n.id)) ||
+             (S.filterTouched && S.touchedSet.has(n.id)));
+  }
+  if (S.selected) {
+    return n.id !== S.selected.id && !S.neighbors.get(S.selected.id)?.has(n.id);
   }
   return false;
 }
 
-function frame() {
-  if (state.alpha > 0.02) tickPhysics();
-  draw();
-  if (state.alpha > 0.02 || dragNode) requestAnimationFrame(frame);
-  else state.running = false;
+function linkStyle(l) {
+  const sid = typeof l.source === "object" ? l.source.id : l.source;
+  const tid = typeof l.target === "object" ? l.target.id : l.target;
+  const sel = S.selected && (sid === S.selected.id || tid === S.selected.id);
+  const bothDim = isDim(S.byId.get(sid)) && isDim(S.byId.get(tid));
+  if (bothDim) return { color: "rgba(255,255,255,0.025)", width: 0.4 };
+  if (l.isNew) return { color: "rgba(111,174,138,0.75)", width: sel ? 1.8 : 1.3 };
+  if (l.layer === "semantic")
+    return { color: sel ? "rgba(143,126,224,0.9)" : "rgba(143,126,224,0.42)", width: sel ? 1.7 : 1.1 };
+  return { color: sel ? "rgba(255,255,255,0.35)" : COL.edge, width: sel ? 1.1 : 0.6 };
 }
 
-function draw() {
-  const w = canvas.width / DPR, h = canvas.height / DPR;
-  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-  ctx.clearRect(0, 0, w, h);
-  const { x: cx, y: cy, k } = state.cam;
-  ctx.translate(w / 2 + cx, h / 2 + cy);
-  ctx.scale(k, k);
+function paintNode(n, ctx, k) {
+  const dim = isDim(n);
+  const col = nodeColor(n);
+  const a = dim ? 0.08 : 1;
+  const hot = S.selected?.id === n.id || S.hovered?.id === n.id;
 
-  const cs = getComputedStyle(document.body);
-  const hint = cs.getPropertyValue("--hint").trim() || "#8a9097";
-  const accent = cs.getPropertyValue("--accent").trim() || "#5b8def";
-  const cNew = cs.getPropertyValue("--new").trim(), cTouch = cs.getPropertyValue("--touched").trim();
-  const showEdgeLabels = state.edgeLabels && k > 0.9;
-
-  /* рёбра */
-  for (const e of state.edges) {
-    const a = state.byId.get(e.src), b = state.byId.get(e.tgt);
-    const sel = state.selected && (e.src === state.selected.id || e.tgt === state.selected.id);
-    const isNew = state.newEdgeSet.has(e.src + "|" + e.tgt);
-    const aDim = dimmed(a), bDim = dimmed(b);
-    ctx.globalAlpha = (aDim && bDim) ? 0.06 : (sel ? 0.9 : (e.layer === "semantic" ? 0.55 : 0.22));
-    ctx.strokeStyle = isNew ? cNew : (e.layer === "semantic" ? accent : hint);
-    ctx.lineWidth = (e.layer === "semantic" ? 1.4 : 0.7) / k + (sel ? 0.6 / k : 0);
-    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
-
-    if ((showEdgeLabels || sel) && e.layer === "semantic" && !(aDim && bDim)) {
-      ctx.globalAlpha = sel ? 0.95 : 0.7;
-      ctx.fillStyle = accent;
-      ctx.font = `${10.5 / k}px system-ui, sans-serif`;
-      ctx.textAlign = "center";
-      ctx.fillText(e.relation, (a.x + b.x) / 2, (a.y + b.y) / 2 - 3 / k);
-    }
+  /* ореол новизны — мягкое внешнее кольцо */
+  if (!dim && (S.newSet.has(n.id) || S.touchedSet.has(n.id))) {
+    ctx.globalAlpha = 0.8;
+    ctx.beginPath(); ctx.arc(n.x, n.y, n.r + 3.5 / k + 1.2, 0, 2 * Math.PI);
+    ctx.strokeStyle = S.newSet.has(n.id) ? COL.new : COL.touched;
+    ctx.lineWidth = 1.6 / k; ctx.stroke();
   }
 
-  /* узлы */
-  for (const n of state.nodes) {
-    const dim = dimmed(n);
-    ctx.globalAlpha = dim ? 0.13 : 1;
-    const col = nodeColor(n);
+  ctx.globalAlpha = a;
+  if (hot && !dim) { ctx.shadowColor = col; ctx.shadowBlur = 14; }
 
-    /* ореол новизны */
-    if (!dim && (state.newSet.has(n.id) || state.touchedSet.has(n.id))) {
-      ctx.beginPath(); ctx.arc(n.x, n.y, n.r + 4 / k, 0, 7);
-      ctx.strokeStyle = state.newSet.has(n.id) ? cNew : cTouch;
-      ctx.lineWidth = 2 / k; ctx.globalAlpha = dim ? 0.13 : 0.85; ctx.stroke();
-      ctx.globalAlpha = dim ? 0.13 : 1;
+  if (n.kind === "concept") {              /* пунктирный контур — страницы нет */
+    ctx.setLineDash([2.5 / k, 2.5 / k]);
+    ctx.beginPath(); ctx.arc(n.x, n.y, n.r, 0, 2 * Math.PI);
+    ctx.strokeStyle = COL.muted; ctx.lineWidth = 1.1 / k; ctx.stroke();
+    ctx.setLineDash([]);
+  } else if (n.kind === "tag") {           /* ромб */
+    const s = n.r * 0.95;
+    ctx.beginPath();
+    ctx.moveTo(n.x, n.y - s); ctx.lineTo(n.x + s, n.y); ctx.lineTo(n.x, n.y + s); ctx.lineTo(n.x - s, n.y);
+    ctx.closePath(); ctx.fillStyle = col; ctx.fill();
+  } else if (n.kind === "org") {           /* скруглённый квадрат — папка */
+    const s = n.r * 1.7, x = n.x - s / 2, y = n.y - s / 2, rr = s * 0.3;
+    ctx.beginPath(); ctx.roundRect(x, y, s, s, rr);
+    ctx.fillStyle = col; ctx.fill();
+  } else {                                 /* заметка — круг */
+    ctx.beginPath(); ctx.arc(n.x, n.y, n.r, 0, 2 * Math.PI);
+    ctx.fillStyle = col; ctx.fill();
+    if (n.entity) {                        /* entity — двойное кольцо */
+      ctx.beginPath(); ctx.arc(n.x, n.y, n.r + 1.8 / k, 0, 2 * Math.PI);
+      ctx.strokeStyle = col; ctx.globalAlpha = a * 0.55; ctx.lineWidth = 0.9 / k; ctx.stroke();
+      ctx.globalAlpha = a;
     }
+  }
+  ctx.shadowBlur = 0;
 
-    ctx.beginPath(); ctx.arc(n.x, n.y, n.r, 0, 7);
-    if (n.kind === "concept") {                 /* концепт без страницы — пунктир */
-      ctx.setLineDash([3 / k, 3 / k]);
-      ctx.strokeStyle = hint; ctx.lineWidth = 1.2 / k; ctx.stroke();
-      ctx.setLineDash([]);
-    } else {
-      ctx.fillStyle = col; ctx.fill();
-      if (n.entity) { ctx.strokeStyle = "rgba(255,255,255,.7)"; ctx.lineWidth = 1.2 / k; ctx.stroke(); }
-    }
-    if (state.selected?.id === n.id) {
-      ctx.beginPath(); ctx.arc(n.x, n.y, n.r + 2.5 / k, 0, 7);
-      ctx.strokeStyle = accent; ctx.lineWidth = 2 / k; ctx.stroke();
-    }
+  if (S.selected?.id === n.id) {
+    ctx.beginPath(); ctx.arc(n.x, n.y, n.r + 4 / k + 1.5, 0, 2 * Math.PI);
+    ctx.strokeStyle = COL.accent; ctx.lineWidth = 1.6 / k; ctx.stroke();
+  }
 
-    /* подписи: крупные узлы, выбранный, найденные, либо все при зуме */
-    const labelled = !dim && (k > 1.5 || n.r > 9 || state.selected?.id === n.id ||
-                              (state.searchTerm && !dim));
-    if (labelled) {
-      ctx.fillStyle = cs.getPropertyValue("--text").trim() || "#e8eaed";
-      ctx.globalAlpha = dim ? 0.13 : 0.9;
-      ctx.font = `${11 / k}px system-ui, sans-serif`;
-      ctx.textAlign = "center";
-      ctx.fillText(n.label, n.x, n.y + n.r + 12 / k);
-    }
+  /* подписи: плавный fade по зуму, крупные и выделенные — раньше */
+  const base = n.r >= 8 ? 0.4 : n.r >= 5 ? 0.7 : 1.05;
+  let la = (k - base) * 2;
+  if (S.selected?.id === n.id || hot || (S.term && !dim)) la = 1;
+  la = Math.max(0, Math.min(1, la));
+  if (la > 0.02 && !dim) {
+    ctx.globalAlpha = la * 0.92;
+    ctx.font = `${11 / k}px -apple-system, system-ui, sans-serif`;
+    ctx.textAlign = "center"; ctx.textBaseline = "top";
+    ctx.fillStyle = COL.text;
+    ctx.fillText(n.label, n.x, n.y + n.r + 4 / k);
   }
   ctx.globalAlpha = 1;
 }
 
-function fitCamera() {
-  if (!state.nodes.length) return;
-  let minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9;
-  for (const n of state.nodes) {
-    minX = Math.min(minX, n.x); maxX = Math.max(maxX, n.x);
-    minY = Math.min(minY, n.y); maxY = Math.max(maxY, n.y);
-  }
-  const w = canvas.width / DPR, h = canvas.height / DPR;
-  const k = Math.min(w / (maxX - minX + 120), h / (maxY - minY + 220), 2);
-  state.cam = { x: -(minX + maxX) / 2 * k, y: -(minY + maxY) / 2 * k, k };
+function paintLinkLabel(l, ctx, k) {
+  if (l.layer !== "semantic") return;
+  const s = l.source, t = l.target;
+  if (typeof s !== "object" || typeof t !== "object") return;
+  const sel = S.selected && (s.id === S.selected.id || t.id === S.selected.id);
+  if (isDim(s) && isDim(t)) return;
+
+  let a = S.alwaysEdgeLabels || sel ? 1 : (k - 1.4) * 1.8;
+  a = Math.max(0, Math.min(1, a));
+  if (a < 0.03) return;
+
+  const mx = (s.x + t.x) / 2, my = (s.y + t.y) / 2;
+  let ang = Math.atan2(t.y - s.y, t.x - s.x);
+  if (ang > Math.PI / 2 || ang < -Math.PI / 2) ang += Math.PI;  /* читаемо слева направо */
+
+  const fs = 9.5 / k;
+  ctx.save();
+  ctx.translate(mx, my); ctx.rotate(ang);
+  ctx.font = `${fs}px -apple-system, system-ui, sans-serif`;
+  const w = ctx.measureText(l.relation).width;
+  ctx.globalAlpha = a * 0.92;
+  ctx.fillStyle = COL.panel;                       /* подложка-пилюля */
+  ctx.beginPath();
+  ctx.roundRect(-w / 2 - 4 / k, -fs * 0.75, w + 8 / k, fs * 1.5, fs * 0.75);
+  ctx.fill();
+  ctx.fillStyle = sel ? COL.accent : "#9d92cf";
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText(l.relation, 0, 0.5 / k);
+  ctx.restore();
+  ctx.globalAlpha = 1;
 }
 
-/* ── ввод: пан/зум/драг/тап ── */
-let dragNode = null;
-const pointers = new Map();
-let pinchBase = null;
-
-function toWorld(px, py) {
-  const w = canvas.width / DPR, h = canvas.height / DPR;
-  return {
-    x: (px - w / 2 - state.cam.x) / state.cam.k,
-    y: (py - h / 2 - state.cam.y) / state.cam.k,
-  };
-}
-function hit(px, py) {
-  const p = toWorld(px, py);
-  let best = null, bestD = 1e9;
-  for (const n of state.nodes) {
-    const d = Math.hypot(n.x - p.x, n.y - p.y);
-    if (d < Math.max(n.r + 6 / state.cam.k, 12 / state.cam.k) && d < bestD) { best = n; bestD = d; }
-  }
-  return best;
+/* ── выбор узла, лист, превью ── */
+function flyTo(n) {
+  Graph.centerAt(n.x, n.y, 650);
+  if (S.zoom < 1.8) Graph.zoom(2.1, 650);
 }
 
-canvas.addEventListener("pointerdown", (ev) => {
-  canvas.setPointerCapture(ev.pointerId);
-  pointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY, moved: false });
-  if (pointers.size === 1) {
-    dragNode = hit(ev.clientX, ev.clientY);
-    if (dragNode) heat(0.3);
-  } else { dragNode = null; pinchBase = null; }
-});
-canvas.addEventListener("pointermove", (ev) => {
-  const p = pointers.get(ev.pointerId);
-  if (!p) return;
-  const dx = ev.clientX - p.x, dy = ev.clientY - p.y;
-  if (Math.hypot(dx, dy) > 4) p.moved = true;
-
-  if (pointers.size === 2) {
-    const pts = [...pointers.entries()].map(([id, q]) =>
-      id === ev.pointerId ? { x: ev.clientX, y: ev.clientY } : q);
-    const d = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
-    const cx = (pts[0].x + pts[1].x) / 2, cy = (pts[0].y + pts[1].y) / 2;
-    if (!pinchBase) {
-      pinchBase = { d, k: state.cam.k, x: state.cam.x, y: state.cam.y, cx, cy };
-    } else {
-      /* зум вокруг центра щипка: мировая точка под пальцами не уезжает */
-      const w = canvas.width / DPR, h = canvas.height / DPR;
-      const k = Math.min(6, Math.max(0.15, pinchBase.k * (d / pinchBase.d)));
-      const wx = (pinchBase.cx - w / 2 - pinchBase.x) / pinchBase.k;
-      const wy = (pinchBase.cy - h / 2 - pinchBase.y) / pinchBase.k;
-      state.cam.k = k;
-      state.cam.x = cx - w / 2 - wx * k;
-      state.cam.y = cy - h / 2 - wy * k;
-      requestDraw();
-    }
-  } else if (dragNode) {
-    const w = toWorld(ev.clientX, ev.clientY);
-    dragNode.x = w.x; dragNode.y = w.y; heat(0.25);
-  } else if (p.moved) {
-    state.cam.x += dx; state.cam.y += dy;
-    requestDraw();
-  }
-  p.x = ev.clientX; p.y = ev.clientY;
-});
-canvas.addEventListener("pointerup", (ev) => {
-  const p = pointers.get(ev.pointerId);
-  pointers.delete(ev.pointerId); pinchBase = null;
-  if (p && !p.moved && pointers.size === 0) {
-    const n = hit(ev.clientX, ev.clientY);
-    select(n);
-  }
-  dragNode = null;
-});
-canvas.addEventListener("pointercancel", (ev) => { pointers.delete(ev.pointerId); dragNode = null; pinchBase = null; });
-canvas.addEventListener("wheel", (ev) => {
-  ev.preventDefault();
-  const w = canvas.width / DPR, h = canvas.height / DPR;
-  const k = Math.min(6, Math.max(0.15, state.cam.k * (ev.deltaY < 0 ? 1.12 : 0.89)));
-  /* зум вокруг курсора */
-  const wx = (ev.clientX - w / 2 - state.cam.x) / state.cam.k;
-  const wy = (ev.clientY - h / 2 - state.cam.y) / state.cam.k;
-  state.cam.x = ev.clientX - w / 2 - wx * k;
-  state.cam.y = ev.clientY - h / 2 - wy * k;
-  state.cam.k = k; requestDraw();
-}, { passive: false });
-
-let drawQueued = false;
-function requestDraw() {
-  if (state.running || drawQueued) return;
-  drawQueued = true;
-  requestAnimationFrame(() => { drawQueued = false; draw(); });
-}
-
-/* ── выбор узла / лист ── */
-const KIND_RU = { note: "заметка", org: "узел-папка", tag: "тег", concept: "концепт без страницы" };
-
-function select(n) {
-  state.selected = n || null;
-  state.hoverEdges = n ? state.edges.filter(e => e.src === n.id || e.tgt === n.id) : [];
-  $("preview").style.display = "none"; $("preview").textContent = "";
-  if (!n) { $("sheet").classList.remove("open"); requestDraw(); return; }
+function select(n, fly) {
+  S.selected = n || null;
+  $("preview").style.display = "none"; $("preview").innerHTML = "";
+  if (!n) { $("sheet").classList.remove("open"); return; }
+  if (fly) flyTo(n);
 
   $("sheet-title").textContent = n.label;
-  const badges = [KIND_RU[n.kind] || n.kind];
-  if (n.entity) badges.push("entity");
-  if (state.newSet.has(n.id)) badges.push("новый");
-  else if (state.touchedSet.has(n.id)) badges.push("изменён");
-  $("sheet-sub").textContent = `${badges.join(" · ")} · связей: ${n.degree}`;
+  const b = $("badges"); b.innerHTML = "";
+  const add = (txt, cls) => {
+    const s = document.createElement("span");
+    s.className = "badge" + (cls ? " " + cls : ""); s.textContent = txt; b.append(s);
+  };
+  add(KIND_RU[n.kind] || n.kind);
+  if (n.entity) add("entity", "acc");
+  if (S.newSet.has(n.id)) add("новый", "new");
+  else if (S.touchedSet.has(n.id)) add("изменён", "touched");
+  add(`связей: ${n.degree}`);
 
   const conns = $("conns"); conns.innerHTML = "";
-  for (const e of state.hoverEdges.slice(0, 60)) {
-    const otherId = e.src === n.id ? e.tgt : e.src;
-    const other = state.byId.get(otherId);
+  const incident = S.links.filter((l) => l.source.id === n.id || l.target.id === n.id);
+  incident.sort((a, b2) => (a.layer === "semantic" ? 0 : 1) - (b2.layer === "semantic" ? 0 : 1));
+  if (incident.length) {
+    const sec = document.createElement("div"); sec.className = "sec";
+    sec.textContent = "Связи"; conns.append(sec);
+  }
+  for (const l of incident.slice(0, 80)) {
+    const other = l.source.id === n.id ? l.target : l.source;
     const row = document.createElement("div"); row.className = "conn";
     const rel = document.createElement("span");
-    rel.className = "rel" + (e.layer === "semantic" ? " sem" : "");
-    rel.textContent = e.relation;
+    rel.className = "rel" + (l.layer === "semantic" ? " sem" : "");
+    rel.textContent = l.relation;
     const who = document.createElement("span"); who.className = "who";
-    who.textContent = other?.label || otherId;
+    const cd = document.createElement("span"); cd.className = "cdot";
+    cd.style.background = nodeColor(other);
+    who.append(cd, document.createTextNode(other.label));
     row.append(rel, who);
-    row.onclick = () => { select(other); centerOn(other); };
+    row.onclick = () => select(other, true);
     conns.append(row);
   }
   $("open-note").style.display = (n.kind === "note" || n.kind === "org") ? "block" : "none";
   $("sheet").classList.add("open");
-  requestDraw();
 }
 
-function centerOn(n) {
-  if (!n) return;
-  state.cam.x = -n.x * state.cam.k;
-  state.cam.y = -n.y * state.cam.k + canvas.height / DPR * 0.1;
-  requestDraw();
+$("sheet-head").onclick = () => select(null);
+
+/* markdown: [[wikilinks]] → кликабельные ссылки, frontmatter — долой */
+function renderMd(md) {
+  md = md.replace(/^---\n[\s\S]*?\n---\n?/, "");
+  md = md.replace(/!?\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|([^\]]+))?\]\]/g, (_, target, alias) => {
+    const t = target.trim().replace(/"/g, "&quot;");
+    const text = (alias || target).trim();
+    return `<a class="wl" data-wl="${t}">${text}</a>`;
+  });
+  const html = marked.parse(md, { breaks: true });
+  return DOMPurify.sanitize(html, { ADD_ATTR: ["data-wl"] });
 }
+
+function findByName(name) {
+  const low = name.toLowerCase();
+  return S.nodes.find((n) => n.id.toLowerCase() === low + ".md") ||
+         S.nodes.find((n) => n.label.toLowerCase() === low) ||
+         S.nodes.find((n) => n.id.toLowerCase().endsWith("/" + low + ".md"));
+}
+
+$("preview").addEventListener("click", (ev) => {
+  const a = ev.target.closest("a.wl");
+  if (!a) return;
+  ev.preventDefault();
+  const n = findByName(a.dataset.wl || "");
+  if (n) select(n, true);
+});
 
 $("open-note").onclick = async () => {
-  const n = state.selected; if (!n) return;
+  const n = S.selected; if (!n) return;
   const btn = $("open-note"); btn.disabled = true; btn.textContent = "Загружаю…";
   try {
-    const r = await api("/api/preview", { node: n.id });
-    $("preview").textContent = r.content + (r.truncated ? "\n\n… (обрезано)" : "");
+    const r = DEMO
+      ? { content: "# Демо\nПревью с **markdown**, `кодом` и [[Знания/AI/RAG|вики-ссылкой]].\n> и цитатой", truncated: false }
+      : await api("/api/preview", { node: n.id });
+    $("preview").innerHTML = renderMd(r.content) +
+      (r.truncated ? '<div class="trunc">… показано начало заметки</div>' : "");
     $("preview").style.display = "block";
   } catch (e) {
-    $("preview").textContent = "Не получилось: " + e.message;
+    $("preview").innerHTML = `<span style="color:var(--danger)">Не получилось: ${e.message}</span>`;
     $("preview").style.display = "block";
   } finally { btn.disabled = false; btn.textContent = "Открыть заметку"; }
 };
 
-$("sheet-head").onclick = () => select(null);
-
-/* ── чипы и поиск ── */
+/* ── чипы ── */
 $("chip-new").onclick = () => {
-  state.filterNew = !state.filterNew; $("chip-new").classList.toggle("on", state.filterNew); requestDraw();
+  S.filterNew = !S.filterNew; $("chip-new").classList.toggle("on", S.filterNew);
 };
 $("chip-touched").onclick = () => {
-  state.filterTouched = !state.filterTouched; $("chip-touched").classList.toggle("on", state.filterTouched); requestDraw();
+  S.filterTouched = !S.filterTouched; $("chip-touched").classList.toggle("on", S.filterTouched);
 };
 $("chip-labels").onclick = () => {
-  state.edgeLabels = !state.edgeLabels; $("chip-labels").classList.toggle("on", state.edgeLabels); requestDraw();
-};
-$("search").oninput = (ev) => {
-  state.searchTerm = ev.target.value.trim().toLowerCase();
-  requestDraw();
-};
-$("search").onkeydown = (ev) => {
-  if (ev.key !== "Enter" || !state.searchTerm) return;
-  const n = state.nodes.find(x => x.label.toLowerCase().includes(state.searchTerm));
-  if (n) { select(n); centerOn(n); }
-  ev.target.blur();
+  S.alwaysEdgeLabels = !S.alwaysEdgeLabels; $("chip-labels").classList.toggle("on", S.alwaysEdgeLabels);
 };
 
-/* ── размер ── */
-function resize() {
-  DPR = Math.min(window.devicePixelRatio || 1, 2);
-  canvas.width = innerWidth * DPR; canvas.height = innerHeight * DPR;
-  canvas.style.width = innerWidth + "px"; canvas.style.height = innerHeight + "px";
-  requestDraw();
-}
-addEventListener("resize", resize);
-resize();
+/* ── поиск с подсказками ── */
+const sug = $("suggest");
+$("search").addEventListener("input", (ev) => {
+  S.term = ev.target.value.trim().toLowerCase();
+  sug.innerHTML = "";
+  if (!S.term) { sug.style.display = "none"; return; }
+  const hits = S.nodes.filter((n) => n.label.toLowerCase().includes(S.term)).slice(0, 7);
+  for (const n of hits) {
+    const row = document.createElement("div"); row.className = "sug";
+    const d = document.createElement("span"); d.className = "dot"; d.style.background = nodeColor(n);
+    const t = document.createElement("span"); t.textContent = n.label;
+    const k = document.createElement("span"); k.className = "kind"; k.textContent = KIND_RU[n.kind] || n.kind;
+    row.append(d, t, k);
+    row.onclick = () => {
+      sug.style.display = "none"; $("search").value = n.label; S.term = "";
+      select(n, true);
+    };
+    sug.append(row);
+  }
+  sug.style.display = hits.length ? "block" : "none";
+});
+$("search").addEventListener("keydown", (ev) => {
+  if (ev.key !== "Enter") return;
+  const n = S.nodes.find((x) => x.label.toLowerCase().includes(S.term));
+  sug.style.display = "none";
+  if (n) { S.term = ""; $("search").value = n.label; select(n, true); }
+  ev.target.blur();
+});
+document.addEventListener("click", (ev) => {
+  if (!ev.target.closest("#searchbox")) sug.style.display = "none";
+});
+
+addEventListener("resize", () => Graph?.width(innerWidth).height(innerHeight));
 load();
 </script>
 </body>

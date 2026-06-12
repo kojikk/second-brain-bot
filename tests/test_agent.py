@@ -255,7 +255,7 @@ async def test_loop_nudges_when_no_vault_consult(monkeypatch):
             return "", "Отвечаю из головы, не глядя в вольт."
         if step[0] == 2:
             # после пуша модель одумалась и пошла в вольт
-            assert any("не сверившись с вольтом" in str(m.get("content", ""))
+            assert any(str(m.get("content", "")).startswith("[vault-check]")
                        for m in messages)
             return "", '```tool\n{"tool": "graph_query", "args": {"question": "x"}}\n```'
         return "", "Теперь отвечаю по вольту."
