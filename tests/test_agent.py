@@ -5,6 +5,7 @@ import pytest
 
 import agent
 from agent import Confirm, Final
+from mcp_client import MCPError
 
 
 def test_extract_tool_call_with_newlines():
@@ -336,3 +337,60 @@ async def test_loop_graceful_summary_on_exhaustion(monkeypatch):
                                "m", "k", "capture")
     assert isinstance(out, Final)
     assert "осталось починить ссылки" in out.text
+
+
+class _NotFoundMCP:
+    """MCP, отклоняющий выдуманное имя инструмента (репро 2026-06-12)."""
+
+    def __init__(self):
+        self.calls = []
+
+    async def call_tool(self, name, args):
+        self.calls.append((name, args))
+        if name == "create_file":
+            raise MCPError("MCP error -32602: Tool create_file not found")
+        return "ok"
+
+    async def list_tools(self):
+        return [{"name": "create_note"}, {"name": "move"}, {"name": "search"}]
+
+
+@pytest.mark.asyncio
+async def test_loop_tool_not_found_appends_real_names(monkeypatch):
+    """«not found» не обрывает луп, а возвращает модели список настоящих имён."""
+    replies = iter([
+        ("", '```tool\n{"tool": "create_file", "args": {"path": "x.md"}}\n```'),
+        ("", "Готово."),
+    ])
+
+    async def fake_complete(messages, model, request_type):
+        return next(replies)
+    monkeypatch.setattr(agent, "_complete", fake_complete)
+
+    messages = [{"role": "user", "content": "создай заметку"}]
+    out = await agent.run_loop(_NotFoundMCP(), messages, "m", "k", "capture")
+    assert isinstance(out, Final)
+    hints = [m for m in messages
+             if m["role"] == "user" and "Доступные инструменты" in str(m["content"])]
+    assert hints, "подсказка со списком инструментов не добавлена"
+    assert "create_note" in hints[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_edit_note_executes_without_user_confirm(monkeypatch):
+    """edit_note — не структурный: исполняется сразу, без Telegram-confirm."""
+    replies = iter([
+        ("", '```tool\n{"tool": "edit_note", "args": {"path": "x.md", "confirm": true}}\n```'),
+        ("", "Поправил."),
+    ])
+
+    async def fake_complete(messages, model, request_type):
+        return next(replies)
+    monkeypatch.setattr(agent, "_complete", fake_complete)
+
+    mcp = _FakeMCP()
+    out = await agent.run_loop(mcp, [{"role": "user", "content": "поправь x"}],
+                               "m", "k", "capture")
+    assert isinstance(out, Final)
+    assert ("edit_note" in [n for n, _ in mcp.calls])
+    assert any(n == "edit_note" and a.get("confirm") is True for n, a in mcp.calls)

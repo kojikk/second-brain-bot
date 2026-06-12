@@ -45,8 +45,12 @@ MCP_TIMEOUT_SEC = float(os.getenv("MCP_TIMEOUT_SEC", "30"))
 AGENT_MD_PATH = os.getenv("AGENT_MD_PATH", "_system/agent.md")
 AGENT_MD_TTL  = int(os.getenv("AGENT_MD_TTL", "900"))  # сек
 
-# Структурные/удаляющие инструменты — двухфазные (dry-run → confirm).
-STRUCTURAL_TOOLS = {"move", "promote", "soft_delete", "edit_note"}
+# Структурные/удаляющие инструменты — двухфазные (dry-run → Telegram-confirm).
+# edit_note сюда НЕ входит: правки контента обратимы через git-аудит вольта, а
+# подтверждение в Telegram на каждый файл душило батчевые правки (/lint —
+# «бесконечные dry-run'ы»). Двухшаговость edit_note (diff → confirm:true)
+# остаётся на стороне MCP-сервера, без участия пользователя.
+STRUCTURAL_TOOLS = {"move", "promote", "soft_delete"}
 
 # ─── Mini App «Граф» ──────────────────────────────────────────────────────────
 # Встроенный HTTP-сервер отдаёт интерактивный граф вольта как Telegram Mini App.
