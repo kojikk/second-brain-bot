@@ -9,7 +9,8 @@ import pytest
 
 import config
 import graph_app
-from graph_app import _diff, take_snapshot, validate_init_data
+from graph_app import (_build_code_graph, _diff, _ns_project, _snap_names,
+                       take_snapshot, validate_init_data)
 
 BOT_TOKEN = "123456:TEST-token"
 
@@ -127,3 +128,73 @@ async def test_snapshot_rotation(tmp_path, monkeypatch):
 
     s3 = await take_snapshot(mcp)
     assert s3["diff"]["new_nodes"] == ["b.md"]       # ротация: prev = v1*, новый узел виден
+
+
+# --- код-граф: парсинг JSONL и неймспейсы ---
+
+def _code_jsonl() -> str:
+    return "\n".join(json.dumps(o, ensure_ascii=False) for o in [
+        {"t": "meta", "project": "foo", "commit": "abc1234", "scanned": "2026-06-13"},
+        {"t": "node", "id": "a.py", "kind": "module", "file": "a.py"},
+        {"t": "node", "id": "a.py#f", "kind": "function", "file": "a.py", "line": 10},
+        {"t": "node", "id": "b.py", "kind": "module", "file": "b.py"},
+        {"t": "edge", "src": "a.py", "tgt": "a.py#f", "rel": "defines", "conf": "extracted"},
+        {"t": "edge", "src": "a.py", "tgt": "b.py", "rel": "imports", "conf": "extracted"},
+    ])
+
+
+def test_build_code_graph():
+    g = _build_code_graph(_code_jsonl(), "foo")
+    assert g["namespace"] == "code:foo"
+    assert g["meta"]["commit"] == "abc1234" and g["meta"]["scanned"] == "2026-06-13"
+    assert g["stats"] == {"nodes": 3, "edges": 2}
+    byid = {n["id"]: n for n in g["nodes"]}
+    assert byid["a.py"]["kind"] == "code" and byid["a.py"]["codeKind"] == "module"
+    assert byid["a.py#f"]["codeKind"] == "function" and byid["a.py#f"]["line"] == 10
+    assert byid["a.py#f"]["label"] == "f"           # подпись = символ после '#'
+    assert byid["a.py"]["degree"] == 2              # два инцидентных ребра
+    # «сообщество» = файл: символ делит его с модулем, другой модуль — отдельное
+    assert byid["a.py"]["community"] == byid["a.py#f"]["community"]
+    assert byid["b.py"]["community"] != byid["a.py"]["community"]
+    assert all(e["layer"] == "code" for e in g["edges"])
+
+
+def test_build_code_graph_skips_garbage():
+    g = _build_code_graph('шум\n{"t":"node","id":"x.py","kind":"module"}\n', "p")
+    assert g["stats"]["nodes"] == 1
+
+
+def test_ns_project_validation():
+    assert _ns_project("kb") is None
+    assert _ns_project("code:second-brain-bot") == "second-brain-bot"
+    assert _ns_project("code:../etc/passwd") is None   # обход пути отклонён
+    assert _ns_project("garbage") is None
+    assert _snap_names("kb") == ("current.json", "previous.json")
+    assert _snap_names("code:foo") == ("current.code-foo.json", "previous.code-foo.json")
+
+
+class _FakeReadMCP:
+    """MCP, отдающий read_file с untrusted-обёрткой Vault MCP."""
+
+    def __init__(self, jsonl: str):
+        self._jsonl = jsonl
+
+    async def call_tool(self, name: str, args: dict) -> str:
+        assert name == "read_file"
+        assert args["path"] == "_system/graph/code/foo.jsonl"
+        return ('<<<UNTRUSTED_VAULT_CONTENT source="x"\nbla\n---\n'
+                + self._jsonl + "\nUNTRUSTED_VAULT_CONTENT>>>")
+
+
+@pytest.mark.asyncio
+async def test_snapshot_code_ns(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "GRAPH_DIR", str(tmp_path))
+    mcp = _FakeReadMCP(_code_jsonl())
+    s = await take_snapshot(mcp, "code:foo")
+    assert s["graph"]["namespace"] == "code:foo"
+    assert s["graph"]["stats"]["nodes"] == 3
+    assert (tmp_path / "current.code-foo.json").exists()
+    assert s["diff"]["baseline"] is None             # своего previous ещё нет
+    # повторный снимок без изменений — ротации previous не возникает
+    s2 = await take_snapshot(mcp, "code:foo")
+    assert s2["diff"]["baseline"] is None

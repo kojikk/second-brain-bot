@@ -66,9 +66,29 @@
   #suggest .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
   #suggest .kind { margin-left: auto; color: var(--faint); font-size: 11.5px; }
 
-  #bar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  /* один ряд: на узких экранах не переносим (иначе мета-пузырь «съезжает»
+     на строку ниже), а горизонтально прокручиваем */
+  #bar {
+    display: flex; gap: 6px; align-items: center;
+    flex-wrap: nowrap; overflow-x: auto;
+    scrollbar-width: none; -ms-overflow-style: none;
+  }
+  #bar::-webkit-scrollbar { display: none; }
+
+  /* ── сегментированный переключатель неймспейса (знания ↔ код) ── */
+  #ns {
+    display: inline-flex; flex: none; padding: 3px; gap: 2px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 999px;
+  }
+  #ns .seg {
+    padding: 5px 13px; font-size: 12px; color: var(--muted);
+    border-radius: 999px; cursor: pointer; user-select: none;
+    transition: color .18s, background .18s;
+  }
+  #ns .seg.on { color: var(--text); background: var(--accent-dim); }
+
   .chip {
-    display: inline-flex; align-items: center; gap: 7px;
+    display: inline-flex; align-items: center; gap: 7px; flex: none;
     padding: 6px 11px; font-size: 12px; color: var(--muted);
     background: var(--panel); border: 1px solid var(--border);
     border-radius: 999px; cursor: pointer; user-select: none;
@@ -78,9 +98,9 @@
   .chip.on { color: var(--text); border-color: var(--accent); background: var(--accent-dim); }
   .chip b { font-weight: 600; }
   #meta {
-    margin-left: auto; font-size: 11.5px; color: var(--faint);
+    margin-left: auto; flex: none; font-size: 11.5px; color: var(--faint);
     background: var(--panel); border: 1px solid var(--border);
-    padding: 6px 11px; border-radius: 999px;
+    padding: 6px 11px; border-radius: 999px; white-space: nowrap;
   }
   #meta .stale { color: var(--touched); }
 
@@ -185,6 +205,10 @@
     <div id="suggest"></div>
   </div>
   <div id="bar">
+    <span id="ns">
+      <span class="seg on" id="ns-kb">Знания</span>
+      <span class="seg" id="ns-code">Код</span>
+    </span>
     <span class="chip" id="chip-new"><span class="dot" style="background:var(--new)"></span>новые <b id="n-new">0</b></span>
     <span class="chip" id="chip-touched"><span class="dot" style="background:var(--touched)"></span>изменённые <b id="n-touched">0</b></span>
     <span class="chip" id="chip-labels">связи</span>
@@ -216,6 +240,10 @@ tg?.setBackgroundColor?.("#141416"); tg?.setHeaderColor?.("#141416");
 const $ = (id) => document.getElementById(id);
 const DEMO = new URLSearchParams(location.search).has("demo");
 
+/* неймспейс код-графа подставляет сервер (_index); фолбэк — для demo с файла */
+const _CP = "__CODE_PROJECT__";
+const CODE_NS = "code:" + (/^[a-z0-9][a-z0-9-]*$/.test(_CP) ? _CP : "second-brain-bot");
+
 /* приглушённые пастели на графите — по сообществам Louvain */
 const PALETTE = ["#9aa7c0", "#c0a98a", "#8fbba0", "#c08f9b", "#a796cf",
                  "#8fb0c0", "#c0b88a", "#b194c0", "#c09a8a", "#8fc0b6"];
@@ -225,14 +253,17 @@ const COL = {
   edge: "rgba(255,255,255,0.10)", panel: "#1d1d21",
 };
 const KIND_RU = { note: "заметка", org: "папка-узел", tag: "тег", concept: "концепт без страницы" };
+const CODE_RU = { module: "модуль", class: "класс", function: "функция", method: "метод", note: "заметка" };
 
 const S = {
+  ns: "kb",
   nodes: [], links: [], byId: new Map(), neighbors: new Map(),
   newSet: new Set(), touchedSet: new Set(), newEdges: new Set(),
   selected: null, hovered: null,
   filterNew: false, filterTouched: false, alwaysEdgeLabels: false,
   term: "", zoom: 1,
 };
+const isCode = () => S.ns !== "kb";
 let Graph = null;
 
 /* ── данные ── */
@@ -276,9 +307,50 @@ function demoData() {
   };
 }
 
-async function load() {
+function codeDemoData() {
+  const mk = (id, codeKind, community, degree) =>
+    ({ id, kind: "code", codeKind, label: id.includes("#") ? id.split("#")[1] : id,
+       entity: false, degree, community, file: id.split("#")[0] });
+  const nodes = [
+    mk("worker.py", "module", 0, 5), mk("worker.py#run_worker", "function", 0, 2),
+    mk("worker.py#_process", "function", 0, 3), mk("agent.py", "module", 1, 4),
+    mk("agent.py#run_loop", "function", 1, 2), mk("agent.py#Final", "class", 1, 1),
+    mk("mcp_client.py", "module", 2, 3), mk("mcp_client.py#MCPClient", "class", 2, 1),
+    mk("queue_db.py", "module", 3, 2), mk("queue_db.py#enqueue", "function", 3, 1),
+  ];
+  const e = (src, tgt, rel) => ({ src, tgt, relation: rel, layer: "code", confidence: "extracted" });
+  const edges = [
+    e("worker.py", "worker.py#run_worker", "defines"), e("worker.py", "worker.py#_process", "defines"),
+    e("worker.py", "agent.py", "imports"), e("worker.py", "mcp_client.py", "imports"),
+    e("worker.py", "queue_db.py", "imports"),
+    e("agent.py", "agent.py#run_loop", "defines"), e("agent.py", "agent.py#Final", "defines"),
+    e("agent.py", "mcp_client.py", "imports"),
+    e("mcp_client.py", "mcp_client.py#MCPClient", "defines"),
+    e("queue_db.py", "queue_db.py#enqueue", "defines"),
+  ];
+  return {
+    stale: false, namespace: CODE_NS,
+    meta: { project: "second-brain-bot", commit: "demo000", scanned: "2026-06-13" },
+    graph: { generated: new Date().toISOString(), stats: { nodes: nodes.length, edges: edges.length }, nodes, edges },
+    diff: { new_nodes: ["queue_db.py#enqueue"], touched_nodes: [], new_edges: [{ src: "queue_db.py", tgt: "queue_db.py#enqueue" }], baseline: "demo" },
+  };
+}
+
+async function loadNs(ns) {
+  S.ns = ns;
+  $("ns-kb").classList.toggle("on", ns === "kb");
+  $("ns-code").classList.toggle("on", ns !== "kb");
+  /* переключение неймспейса начинает вид с чистого листа */
+  S.selected = null; S.term = ""; $("search").value = "";
+  S.filterNew = false; S.filterTouched = false;
+  $("chip-new").classList.remove("on"); $("chip-touched").classList.remove("on");
+  $("overlay").style.display = "flex";
+  $("overlay-text").textContent = ns === "kb" ? "Загружаю граф знаний…" : "Загружаю код-граф…";
+  document.querySelector(".spin").style.display = "";
   try {
-    const data = DEMO ? demoData() : await api("/api/graph", {});
+    const data = DEMO
+      ? (ns === "kb" ? demoData() : codeDemoData())
+      : await api("/api/graph", ns === "kb" ? {} : { ns });
     init(data);
     $("overlay").style.display = "none";
   } catch (e) {
@@ -286,6 +358,11 @@ async function load() {
     document.querySelector(".spin").style.display = "none";
   }
 }
+
+const load = () => loadNs("kb");
+
+$("ns-kb").onclick = () => { if (S.ns !== "kb") loadNs("kb"); };
+$("ns-code").onclick = () => { if (S.ns !== CODE_NS) loadNs(CODE_NS); };
 
 function nodeColor(n) {
   if (n.kind === "tag") return "#6e6e78";
@@ -315,11 +392,24 @@ function init(data) {
   $("n-new").textContent = S.newSet.size;
   $("n-touched").textContent = S.touchedSet.size;
   const when = (g.generated || "").slice(0, 16).replace("T", " ");
-  $("meta").innerHTML = `${g.stats.nodes} узлов · ${g.stats.edges} связей` +
-    (data.stale ? ` · <span class="stale">офлайн</span>` : "");
+  let metaTxt = `${g.stats.nodes} узлов · ${g.stats.edges} связей`;
+  if (isCode() && data.meta) {
+    const m = data.meta;
+    metaTxt += (m.commit ? ` · ${String(m.commit).slice(0, 7)}` : "") +
+               (m.scanned ? ` · ${m.scanned}` : "");
+  }
+  $("meta").innerHTML = metaTxt + (data.stale ? ` · <span class="stale">офлайн</span>` : "");
   $("meta").title = when;
 
-  buildGraph();
+  if (!Graph) {
+    buildGraph();
+  } else {
+    /* переключение неймспейса — переиспользуем движок, меняем только данные */
+    select(null);
+    Graph.graphData({ nodes: S.nodes, links: S.links });
+    S._userMoved = false;
+    setTimeout(() => fitOnce(600), 350);
+  }
 }
 
 /* ── force-graph: плавная d3-физика вместо самописной ── */
@@ -356,8 +446,10 @@ function buildGraph() {
   /* разреженный, дышащий layout: сильнее отталкивание, длиннее связи */
   Graph.d3Force("charge").strength(-170).distanceMax(420);
   Graph.d3Force("link")
-    .distance((l) => (l.layer === "semantic" ? 95 : 60))
-    .strength((l) => (l.layer === "semantic" ? 0.7 : 0.35));
+    .distance((l) => l.layer === "semantic" ? 95
+                   : l.layer === "code" ? (l.relation === "imports" ? 92 : 32) : 60)
+    .strength((l) => l.layer === "semantic" ? 0.7
+                   : l.layer === "code" ? (l.relation === "imports" ? 0.22 : 0.9) : 0.35);
   Graph.d3Force("center").strength(0.04);
 }
 
@@ -386,6 +478,11 @@ function linkStyle(l) {
   const bothDim = isDim(S.byId.get(sid)) && isDim(S.byId.get(tid));
   if (bothDim) return { color: "rgba(255,255,255,0.025)", width: 0.4 };
   if (l.isNew) return { color: "rgba(111,174,138,0.75)", width: sel ? 1.8 : 1.3 };
+  if (l.layer === "code") {                /* imports — архитектура (акцент), defines — скелет (бледно) */
+    if (l.relation === "imports")
+      return { color: sel ? "rgba(143,126,224,0.9)" : "rgba(143,126,224,0.4)", width: sel ? 1.7 : 1.1 };
+    return { color: sel ? "rgba(255,255,255,0.3)" : "rgba(255,255,255,0.06)", width: sel ? 1 : 0.5 };
+  }
   if (l.layer === "semantic")
     return { color: sel ? "rgba(143,126,224,0.9)" : "rgba(143,126,224,0.42)", width: sel ? 1.7 : 1.1 };
   return { color: sel ? "rgba(255,255,255,0.35)" : COL.edge, width: sel ? 1.1 : 0.6 };
@@ -408,7 +505,21 @@ function paintNode(n, ctx, k) {
   ctx.globalAlpha = a;
   if (hot && !dim) { ctx.shadowColor = col; ctx.shadowBlur = 14; }
 
-  if (n.kind === "concept") {              /* пунктирный контур — страницы нет */
+  if (n.kind === "code") {                 /* код: модуль — квадрат, класс — ромб, ф-я/метод — круг */
+    if (n.codeKind === "module") {
+      const s = n.r * 1.7, x = n.x - s / 2, y = n.y - s / 2, rr = s * 0.3;
+      ctx.beginPath(); ctx.roundRect(x, y, s, s, rr);
+      ctx.fillStyle = col; ctx.fill();
+    } else if (n.codeKind === "class") {
+      const s = n.r * 1.05;
+      ctx.beginPath();
+      ctx.moveTo(n.x, n.y - s); ctx.lineTo(n.x + s, n.y); ctx.lineTo(n.x, n.y + s); ctx.lineTo(n.x - s, n.y);
+      ctx.closePath(); ctx.fillStyle = col; ctx.fill();
+    } else {                               /* function / method */
+      ctx.beginPath(); ctx.arc(n.x, n.y, n.r, 0, 2 * Math.PI);
+      ctx.fillStyle = col; ctx.fill();
+    }
+  } else if (n.kind === "concept") {       /* пунктирный контур — страницы нет */
     ctx.setLineDash([2.5 / k, 2.5 / k]);
     ctx.beginPath(); ctx.arc(n.x, n.y, n.r, 0, 2 * Math.PI);
     ctx.strokeStyle = COL.muted; ctx.lineWidth = 1.1 / k; ctx.stroke();
@@ -454,7 +565,8 @@ function paintNode(n, ctx, k) {
 }
 
 function paintLinkLabel(l, ctx, k) {
-  if (l.layer !== "semantic") return;
+  /* подписываем смысловые рёбра знаний и архитектурные imports кода (не скелет defines) */
+  if (!(l.layer === "semantic" || (l.layer === "code" && l.relation === "imports"))) return;
   const s = l.source, t = l.target;
   if (typeof s !== "object" || typeof t !== "object") return;
   const sel = S.selected && (s.id === S.selected.id || t.id === S.selected.id);
@@ -503,7 +615,8 @@ function select(n, fly) {
     const s = document.createElement("span");
     s.className = "badge" + (cls ? " " + cls : ""); s.textContent = txt; b.append(s);
   };
-  add(KIND_RU[n.kind] || n.kind);
+  add(isCode() ? (CODE_RU[n.codeKind] || n.codeKind || "код") : (KIND_RU[n.kind] || n.kind));
+  if (isCode() && n.file) add(n.line ? `${n.file}:${n.line}` : n.file);
   if (n.entity) add("entity", "acc");
   if (S.newSet.has(n.id)) add("новый", "new");
   else if (S.touchedSet.has(n.id)) add("изменён", "touched");
@@ -601,7 +714,8 @@ $("search").addEventListener("input", (ev) => {
     const row = document.createElement("div"); row.className = "sug";
     const d = document.createElement("span"); d.className = "dot"; d.style.background = nodeColor(n);
     const t = document.createElement("span"); t.textContent = n.label;
-    const k = document.createElement("span"); k.className = "kind"; k.textContent = KIND_RU[n.kind] || n.kind;
+    const k = document.createElement("span"); k.className = "kind";
+    k.textContent = isCode() ? (CODE_RU[n.codeKind] || n.codeKind || "код") : (KIND_RU[n.kind] || n.kind);
     row.append(d, t, k);
     row.onclick = () => {
       sug.style.display = "none"; $("search").value = n.label; S.term = "";

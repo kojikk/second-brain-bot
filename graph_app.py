@@ -18,7 +18,9 @@ import hmac
 import json
 import logging
 import os
+import re
 import time
+from datetime import datetime, timezone
 from urllib.parse import parse_qsl
 
 from aiohttp import web
@@ -36,11 +38,34 @@ _PREVIOUS = "previous.json"
 # Превью файла в просмотрщике — обрезаем, чтобы не таскать мегабайты в webview.
 _PREVIEW_MAX_CHARS = 4000
 
+# Неймспейсы графа: "kb" (граф знаний, дефолт) и "code:<project>" — изолированный
+# код-граф проекта (_system/graph/code/<project>.jsonl, кладёт codegraph-sync).
+# Проект ограничен [a-z0-9-], чтобы из ns нельзя было собрать обход пути в read_file.
+_NS_RE = re.compile(r"^code:([a-z0-9][a-z0-9-]*)$")
+
 
 # ─── Снапшоты ─────────────────────────────────────────────────────────────────
 
 def _snap_path(name: str) -> str:
     return os.path.join(config.GRAPH_DIR, name)
+
+
+def _ns_project(ns: str) -> str | None:
+    """Имя проекта из 'code:<project>', иначе None (для 'kb' и мусора)."""
+    m = _NS_RE.match(ns or "")
+    return m.group(1) if m else None
+
+
+def _snap_names(ns: str) -> tuple[str, str]:
+    """Имена файлов снапшота (current, previous) для неймспейса.
+
+    kb остаётся на current.json/previous.json (обратная совместимость), у каждого
+    код-графа — свои файлы, чтобы переключение вида не затирало чужой diff.
+    """
+    project = _ns_project(ns)
+    if project is None:
+        return _CURRENT, _PREVIOUS
+    return f"current.code-{project}.json", f"previous.code-{project}.json"
 
 
 def _load_snapshot(name: str) -> dict | None:
@@ -89,24 +114,114 @@ def _diff(current: dict, previous: dict | None) -> dict:
     }
 
 
-async def take_snapshot(mcp: MCPClient) -> dict:
+def _build_code_graph(text: str, project: str) -> dict:
+    """JSONL код-графа (meta/node/edge) → форма, которую ест viewer.
+
+    Узлы кода получают kind="code" (+ codeKind: module/class/function/method),
+    степень считаем по рёбрам, «сообщество» = файл-модуль (в коде модули и есть
+    естественные сообщества, GRAPH-PLAN-CODE.md §3 — Louvain не гоняем).
+    """
+    meta: dict = {}
+    raw_nodes: list[dict] = []
+    edges: list[dict] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue  # частичный/битый снимок не должен ронять viewer
+        kind = obj.get("t")
+        if kind == "meta":
+            meta = obj
+        elif kind == "node":
+            raw_nodes.append(obj)
+        elif kind == "edge":
+            edges.append(obj)
+
+    degree: dict[str, int] = {}
+    for e in edges:
+        degree[e.get("src", "")] = degree.get(e.get("src", ""), 0) + 1
+        degree[e.get("tgt", "")] = degree.get(e.get("tgt", ""), 0) + 1
+
+    file_idx: dict[str, int] = {}
+    nodes = []
+    for n in raw_nodes:
+        nid = n.get("id", "")
+        if not nid:
+            continue
+        file = n.get("file") or nid
+        community = file_idx.setdefault(file, len(file_idx))
+        label = nid[nid.index("#") + 1:] if "#" in nid else nid
+        node = {
+            "id": nid,
+            "kind": "code",
+            "codeKind": n.get("kind"),
+            "label": label,
+            "entity": False,
+            "degree": degree.get(nid, 0),
+            "community": community,
+            "file": file,
+        }
+        if "line" in n:
+            node["line"] = n["line"]
+        nodes.append(node)
+
+    out_edges = [{
+        "src": e.get("src"), "tgt": e.get("tgt"),
+        "relation": e.get("rel", ""), "layer": "code",
+        "confidence": e.get("conf", "extracted"),
+    } for e in edges if e.get("src") and e.get("tgt")]
+
+    return {
+        "generated": datetime.now(timezone.utc).isoformat(),
+        "namespace": f"code:{project}",
+        "meta": {
+            "project": meta.get("project", project),
+            "commit": meta.get("commit"),
+            "scanned": meta.get("scanned"),
+            "generator": meta.get("generator"),
+        },
+        "stats": {"nodes": len(nodes), "edges": len(out_edges)},
+        "nodes": nodes,
+        "edges": out_edges,
+    }
+
+
+async def _code_graph(mcp: MCPClient, project: str) -> dict:
+    """Прочитать _system/graph/code/<project>.jsonl через Vault MCP и собрать граф."""
+    raw = await mcp.call_tool(
+        "read_file", {"path": f"_system/graph/code/{project}.jsonl"})
+    # Снимаем untrusted-обёртку Vault MCP — это машинный дамп, не инструкции.
+    from brain import _strip_untrusted
+    return _build_code_graph(_strip_untrusted(raw), project)
+
+
+async def take_snapshot(mcp: MCPClient, ns: str = "kb") -> dict:
     """Снять свежий снапшот графа и отротировать previous при реальном изменении.
 
+    ns="kb" — граф знаний (graph_export); ns="code:<project>" — код-граф проекта.
     Возвращает {"graph": <данные>, "diff": <изменения>} — то, что ест viewer.
     Может бросить MCPUnavailable/MCPError — вызывающий решает, что показать.
     """
-    raw = await mcp.call_tool("graph_export", {})
-    data = json.loads(raw)
+    project = _ns_project(ns)
+    if project is not None:
+        data = await _code_graph(mcp, project)
+    else:
+        raw = await mcp.call_tool("graph_export", {})
+        data = json.loads(raw)
 
+    cur_name, prev_name = _snap_names(ns)
     os.makedirs(config.GRAPH_DIR, exist_ok=True)
-    current = _load_snapshot(_CURRENT)
+    current = _load_snapshot(cur_name)
     if current and _graph_fingerprint(current) != _graph_fingerprint(data):
         # Граф изменился — прежний current становится базой для подсветки.
-        os.replace(_snap_path(_CURRENT), _snap_path(_PREVIOUS))
-    with open(_snap_path(_CURRENT), "w", encoding="utf-8") as f:
+        os.replace(_snap_path(cur_name), _snap_path(prev_name))
+    with open(_snap_path(cur_name), "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False)
 
-    return {"graph": data, "diff": _diff(data, _load_snapshot(_PREVIOUS))}
+    return {"graph": data, "diff": _diff(data, _load_snapshot(prev_name))}
 
 
 # ─── Аутентификация Mini App (initData) ───────────────────────────────────────
@@ -149,6 +264,9 @@ async def _index(_request: web.Request) -> web.Response:
             html = f.read()
     except OSError:
         return web.Response(status=500, text="viewer is not bundled")
+    # Единый источник имени проекта код-графа — конфиг сервера, не зашитая строка.
+    code_project = _ns_project(f"code:{config.GRAPH_CODE_PROJECT}")
+    html = html.replace("__CODE_PROJECT__", code_project or "")
     return web.Response(text=html, content_type="text/html",
                         headers={"Cache-Control": "no-store"})
 
@@ -162,19 +280,24 @@ async def _api_graph(request: web.Request) -> web.Response:
     if not _authorized(payload):
         return web.json_response({"error": "unauthorized"}, status=401)
 
+    ns = str(payload.get("ns", "kb")) or "kb"
+    if ns != "kb" and _ns_project(ns) is None:
+        return web.json_response({"error": "неизвестный неймспейс"}, status=400)
+    cur_name, prev_name = _snap_names(ns)
+
     mcp: MCPClient = request.app["mcp"]
     try:
-        snap = await take_snapshot(mcp)
+        snap = await take_snapshot(mcp, ns)
         return web.json_response({**snap, "stale": False})
     except (MCPUnavailable, MCPError, json.JSONDecodeError) as e:
-        current = _load_snapshot(_CURRENT)
+        current = _load_snapshot(cur_name)
         if current is None:
             return web.json_response(
                 {"error": "вольт недоступен и снапшота ещё нет"}, status=503)
         logger.warning("graph api: live export failed (%s), отдаю снапшот", e)
         return web.json_response({
             "graph": current,
-            "diff": _diff(current, _load_snapshot(_PREVIOUS)),
+            "diff": _diff(current, _load_snapshot(prev_name)),
             "stale": True,
         })
 

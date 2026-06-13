@@ -59,6 +59,9 @@ STRUCTURAL_TOOLS = {"move", "promote", "soft_delete"}
 GRAPH_PORT       = int(os.getenv("GRAPH_PORT", "8090"))
 GRAPH_PUBLIC_URL = os.getenv("GRAPH_PUBLIC_URL", "").rstrip("/")
 GRAPH_DIR        = os.getenv("GRAPH_DIR", "/app/data/graph")
+# Проект, чей код-граф (_system/graph/code/<project>.jsonl) показывает второй
+# вид просмотрщика. Имя ограничено [a-z0-9-] (без обхода пути в read_file).
+GRAPH_CODE_PROJECT = os.getenv("GRAPH_CODE_PROJECT", "second-brain-bot")
 # Свежесть auth-подписи Mini App (initData) в секундах.
 GRAPH_AUTH_MAX_AGE = int(os.getenv("GRAPH_AUTH_MAX_AGE", str(24 * 3600)))
 
