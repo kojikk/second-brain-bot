@@ -97,6 +97,16 @@
   .chip .dot { width: 7px; height: 7px; border-radius: 50%; }
   .chip.on { color: var(--text); border-color: var(--accent); background: var(--accent-dim); }
   .chip b { font-weight: 600; }
+
+  /* выпадашка выбора проекта (код-режим) */
+  select.chip {
+    -webkit-appearance: none; appearance: none;
+    padding-right: 26px; max-width: 46vw; text-overflow: ellipsis;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6'><path d='M1 1l4 4 4-4' stroke='%238b8b94' stroke-width='1.4' fill='none' stroke-linecap='round'/></svg>");
+    background-repeat: no-repeat; background-position: right 10px center;
+  }
+  select.chip.on { color: var(--text); border-color: var(--accent); background-color: var(--accent-dim); }
+  select.chip option { color: var(--text); background: var(--panel-solid); }
   #meta {
     margin-left: auto; flex: none; font-size: 11.5px; color: var(--faint);
     background: var(--panel); border: 1px solid var(--border);
@@ -209,6 +219,7 @@
       <span class="seg on" id="ns-kb">Знания</span>
       <span class="seg" id="ns-code">Код</span>
     </span>
+    <select class="chip" id="proj" style="display:none" title="Проект код-графа"></select>
     <span class="chip" id="chip-new"><span class="dot" style="background:var(--new)"></span>новые <b id="n-new">0</b></span>
     <span class="chip" id="chip-touched"><span class="dot" style="background:var(--touched)"></span>изменённые <b id="n-touched">0</b></span>
     <span class="chip" id="chip-labels">связи</span>
@@ -240,9 +251,8 @@ tg?.setBackgroundColor?.("#141416"); tg?.setHeaderColor?.("#141416");
 const $ = (id) => document.getElementById(id);
 const DEMO = new URLSearchParams(location.search).has("demo");
 
-/* неймспейс код-графа подставляет сервер (_index); фолбэк — для demo с файла */
-const _CP = "__CODE_PROJECT__";
-const CODE_NS = "code:" + (/^[a-z0-9][a-z0-9-]*$/.test(_CP) ? _CP : "second-brain-bot");
+/* код-режим грузит все проекты сразу (code:*) и кластеризует по проекту */
+const CODE_ALL_NS = "code:*";
 
 /* приглушённые пастели на графите — по сообществам Louvain */
 const PALETTE = ["#9aa7c0", "#c0a98a", "#8fbba0", "#c08f9b", "#a796cf",
@@ -261,6 +271,7 @@ const S = {
   newSet: new Set(), touchedSet: new Set(), newEdges: new Set(),
   selected: null, hovered: null,
   filterNew: false, filterTouched: false, alwaysEdgeLabels: false,
+  projectFilter: null,
   term: "", zoom: 1,
 };
 const isCode = () => S.ns !== "kb";
@@ -308,39 +319,47 @@ function demoData() {
 }
 
 function codeDemoData() {
-  const mk = (id, codeKind, community, degree) =>
-    ({ id, kind: "code", codeKind, label: id.includes("#") ? id.split("#")[1] : id,
-       entity: false, degree, community, file: id.split("#")[0] });
-  const nodes = [
-    mk("worker.py", "module", 0, 5), mk("worker.py#run_worker", "function", 0, 2),
-    mk("worker.py#_process", "function", 0, 3), mk("agent.py", "module", 1, 4),
-    mk("agent.py#run_loop", "function", 1, 2), mk("agent.py#Final", "class", 1, 1),
-    mk("mcp_client.py", "module", 2, 3), mk("mcp_client.py#MCPClient", "class", 2, 1),
-    mk("queue_db.py", "module", 3, 2), mk("queue_db.py#enqueue", "function", 3, 1),
-  ];
-  const e = (src, tgt, rel) => ({ src, tgt, relation: rel, layer: "code", confidence: "extracted" });
-  const edges = [
-    /* defines — скелет модуль→символ */
-    e("worker.py", "worker.py#run_worker", "defines"), e("worker.py", "worker.py#_process", "defines"),
-    e("agent.py", "agent.py#run_loop", "defines"), e("agent.py", "agent.py#Final", "defines"),
-    e("mcp_client.py", "mcp_client.py#MCPClient", "defines"), e("queue_db.py", "queue_db.py#enqueue", "defines"),
-    /* imports — зависимости модулей */
-    e("worker.py", "agent.py", "imports"), e("worker.py", "mcp_client.py", "imports"),
-    e("worker.py", "queue_db.py", "imports"), e("agent.py", "mcp_client.py", "imports"),
-    /* calls — поведение (основной сигнал) */
-    e("worker.py#run_worker", "worker.py#_process", "calls"),
-    e("worker.py#_process", "agent.py#run_loop", "calls"),
-    e("agent.py#run_loop", "mcp_client.py#MCPClient", "calls"),
-    e("worker.py#_process", "queue_db.py#enqueue", "calls"),
-    /* instantiates / references */
-    e("agent.py#run_loop", "agent.py#Final", "instantiates"),
-    e("worker.py#run_worker", "queue_db.py#enqueue", "references"),
-  ];
+  /* два проекта — чтобы видеть кластеры по проекту + выпадашку с подсветкой */
+  const nodes = [], edges = [];
+  const e = (src, tgt, rel) => edges.push({ src, tgt, relation: rel, layer: "code", confidence: "extracted" });
+  const proj = (name, idx, defs) => {
+    const pre = name + "::";
+    const mk = (id, codeKind, degree) => nodes.push(
+      { id: pre + id, kind: "code", codeKind, project: name, community: idx, degree,
+        label: id.includes("#") ? id.split("#")[1] : id, entity: false, file: id.split("#")[0] });
+    for (const [id, kind, deg] of defs) mk(id, kind, deg);
+    return pre;
+  };
+  const a = proj("second-brain-bot", 0, [
+    ["worker.py", "module", 5], ["worker.py#run_worker", "function", 2],
+    ["worker.py#_process", "function", 3], ["agent.py", "module", 4],
+    ["agent.py#run_loop", "function", 2], ["mcp_client.py", "module", 3],
+    ["mcp_client.py#MCPClient", "class", 1],
+  ]);
+  e(a + "worker.py", a + "worker.py#run_worker", "defines");
+  e(a + "worker.py", a + "worker.py#_process", "defines");
+  e(a + "agent.py", a + "agent.py#run_loop", "defines");
+  e(a + "mcp_client.py", a + "mcp_client.py#MCPClient", "defines");
+  e(a + "worker.py", a + "agent.py", "imports");
+  e(a + "worker.py", a + "mcp_client.py", "imports");
+  e(a + "worker.py#_process", a + "agent.py#run_loop", "calls");
+  e(a + "agent.py#run_loop", a + "mcp_client.py#MCPClient", "calls");
+  const b = proj("fleetpanel", 1, [
+    ["lib/server-manager.ts", "module", 4], ["lib/server-manager.ts#createServer", "function", 3],
+    ["lib/docker.ts", "module", 3], ["lib/docker.ts#createContainer", "function", 2],
+    ["app/api/route.ts", "module", 2],
+  ]);
+  e(b + "lib/server-manager.ts", b + "lib/server-manager.ts#createServer", "defines");
+  e(b + "lib/docker.ts", b + "lib/docker.ts#createContainer", "defines");
+  e(b + "lib/server-manager.ts", b + "lib/docker.ts", "imports");
+  e(b + "lib/server-manager.ts#createServer", b + "lib/docker.ts#createContainer", "calls");
+  e(b + "app/api/route.ts", b + "lib/server-manager.ts#createServer", "calls");
   return {
-    stale: false, namespace: CODE_NS,
-    meta: { project: "second-brain-bot", commit: "demo000", scanned: "2026-06-13" },
-    graph: { generated: new Date().toISOString(), stats: { nodes: nodes.length, edges: edges.length }, nodes, edges },
-    diff: { new_nodes: ["queue_db.py#enqueue"], touched_nodes: [], new_edges: [{ src: "queue_db.py", tgt: "queue_db.py#enqueue" }], baseline: "demo" },
+    stale: false,
+    graph: { generated: new Date().toISOString(), meta: { projects: ["second-brain-bot", "fleetpanel"] },
+             stats: { nodes: nodes.length, edges: edges.length }, nodes, edges },
+    diff: { new_nodes: [b + "app/api/route.ts"], touched_nodes: [],
+            new_edges: [{ src: b + "app/api/route.ts", tgt: b + "lib/server-manager.ts#createServer" }], baseline: "demo" },
   };
 }
 
@@ -350,8 +369,10 @@ async function loadNs(ns) {
   $("ns-code").classList.toggle("on", ns !== "kb");
   /* переключение неймспейса начинает вид с чистого листа */
   S.selected = null; S.term = ""; $("search").value = "";
-  S.filterNew = false; S.filterTouched = false;
+  S.filterNew = false; S.filterTouched = false; S.projectFilter = null;
   $("chip-new").classList.remove("on"); $("chip-touched").classList.remove("on");
+  $("proj").classList.remove("on");
+  $("proj").style.display = ns === CODE_ALL_NS ? "" : "none";
   $("overlay").style.display = "flex";
   $("overlay-text").textContent = ns === "kb" ? "Загружаю граф знаний…" : "Загружаю код-граф…";
   document.querySelector(".spin").style.display = "";
@@ -370,7 +391,32 @@ async function loadNs(ns) {
 const load = () => loadNs("kb");
 
 $("ns-kb").onclick = () => { if (S.ns !== "kb") loadNs("kb"); };
-$("ns-code").onclick = () => { if (S.ns !== CODE_NS) loadNs(CODE_NS); };
+$("ns-code").onclick = () => { if (S.ns !== CODE_ALL_NS) loadNs(CODE_ALL_NS); };
+
+/* выпадашка проектов код-режима: заполнение + выбор-подсветка */
+function populateProjects(projects) {
+  const sel = $("proj");
+  sel.innerHTML = "";
+  const all = document.createElement("option");
+  all.value = ""; all.textContent = "Все проекты"; sel.append(all);
+  for (const p of projects) {
+    const o = document.createElement("option"); o.value = p; o.textContent = p; sel.append(o);
+  }
+  sel.value = S.projectFilter || "";
+  sel.classList.toggle("on", !!S.projectFilter);
+}
+$("proj").onchange = (ev) => {
+  S.projectFilter = ev.target.value || null;
+  $("proj").classList.toggle("on", !!S.projectFilter);
+  select(null);
+  if (S.projectFilter) {
+    S._userMoved = false;
+    setTimeout(() => { if (!S._userMoved)
+      Graph.zoomToFit(600, Math.min(innerWidth, innerHeight) * 0.12, (n) => n.project === S.projectFilter); }, 60);
+  } else {
+    S._userMoved = false; fitOnce(600);
+  }
+};
 
 function nodeColor(n) {
   if (n.kind === "tag") return "#6e6e78";
@@ -401,10 +447,10 @@ function init(data) {
   $("n-touched").textContent = S.touchedSet.size;
   const when = (g.generated || "").slice(0, 16).replace("T", " ");
   let metaTxt = `${g.stats.nodes} узлов · ${g.stats.edges} связей`;
-  if (isCode() && data.meta) {
-    const m = data.meta;
-    metaTxt += (m.commit ? ` · ${String(m.commit).slice(0, 7)}` : "") +
-               (m.scanned ? ` · ${m.scanned}` : "");
+  if (S.ns === CODE_ALL_NS) {
+    const projects = (g.meta && g.meta.projects) || [];
+    populateProjects(projects);
+    metaTxt = `${projects.length} проектов · ` + metaTxt;
   }
   $("meta").innerHTML = metaTxt + (data.stale ? ` · <span class="stale">офлайн</span>` : "");
   $("meta").title = when;
@@ -476,6 +522,7 @@ function isDim(n) {
   if (S.selected) {
     return n.id !== S.selected.id && !S.neighbors.get(S.selected.id)?.has(n.id);
   }
+  if (S.projectFilter) return n.project !== S.projectFilter;
   return false;
 }
 

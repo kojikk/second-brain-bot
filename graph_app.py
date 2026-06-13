@@ -42,6 +42,12 @@ _PREVIEW_MAX_CHARS = 4000
 # код-граф проекта (_system/graph/code/<project>.jsonl, кладёт codegraph-sync).
 # Проект ограничен [a-z0-9-], чтобы из ns нельзя было собрать обход пути в read_file.
 _NS_RE = re.compile(r"^code:([a-z0-9][a-z0-9-]*)$")
+_PROJECT_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+
+# Сводный код-вид: все проекты на одном экране, кластерами по проекту. Звёздочку
+# _NS_RE не пропускает, поэтому этот неймспейс обрабатывается явными ветками.
+_ALL_CODE_NS = "code:*"
+_CODE_DIR = "_system/graph/code"
 
 
 # ─── Снапшоты ─────────────────────────────────────────────────────────────────
@@ -62,6 +68,8 @@ def _snap_names(ns: str) -> tuple[str, str]:
     kb остаётся на current.json/previous.json (обратная совместимость), у каждого
     код-графа — свои файлы, чтобы переключение вида не затирало чужой diff.
     """
+    if ns == _ALL_CODE_NS:
+        return "current.code-all.json", "previous.code-all.json"
     project = _ns_project(ns)
     if project is None:
         return _CURRENT, _PREVIOUS
@@ -198,6 +206,79 @@ async def _code_graph(mcp: MCPClient, project: str) -> dict:
     return _build_code_graph(_strip_untrusted(raw), project)
 
 
+async def _list_code_projects(mcp: MCPClient) -> list[str]:
+    """Имена проектов код-графов (файлы *.jsonl в _system/graph/code/) через MCP.
+
+    Автообнаружение: новый снимок codegraph-sync появляется в выпадашке без
+    правок конфига. Имена валидируем _PROJECT_RE — мусор/обход пути отсекаем.
+    """
+    try:
+        raw = await mcp.call_tool(
+            "vault_tree", {"path": _CODE_DIR, "includeFiles": True})
+    except (MCPUnavailable, MCPError):
+        return []
+    from brain import _strip_untrusted
+    try:
+        tree = json.loads(_strip_untrusted(raw))
+    except (json.JSONDecodeError, TypeError):
+        return []
+    projects = []
+    for child in (tree.get("children") or []):
+        name = child.get("name", "")
+        if child.get("type") == "file" and name.endswith(".jsonl"):
+            proj = name[: -len(".jsonl")]
+            if _PROJECT_RE.match(proj):
+                projects.append(proj)
+    return sorted(projects)
+
+
+async def _all_code_graph(mcp: MCPClient) -> dict:
+    """Свести код-графы всех проектов в один граф, кластеризованный по проекту.
+
+    Неймспейсы изолированы (рёбер между проектами нет) — в layout они сами
+    расходятся отдельными кластерами. id узлов префиксуем '<project>::', чтобы
+    одинаковые пути из разных проектов не схлопнулись; community = индекс
+    проекта (цвет на кластер), поле project — для выпадашки и подсветки.
+    """
+    from brain import _strip_untrusted
+    projects = await _list_code_projects(mcp)
+    if not projects and config.GRAPH_CODE_PROJECT:
+        projects = [config.GRAPH_CODE_PROJECT]   # фолбэк, если дерево не отдалось
+
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    present: list[str] = []
+    for idx, proj in enumerate(projects):
+        try:
+            raw = await mcp.call_tool(
+                "read_file", {"path": f"{_CODE_DIR}/{proj}.jsonl"})
+        except (MCPUnavailable, MCPError):
+            continue                              # один битый проект не валит вид
+        g = _build_code_graph(_strip_untrusted(raw), proj)
+        if not g["nodes"]:
+            continue
+        present.append(proj)
+        prefix = f"{proj}::"
+        for n in g["nodes"]:
+            n["id"] = prefix + n["id"]
+            n["project"] = proj
+            n["community"] = idx
+            nodes.append(n)
+        for e in g["edges"]:
+            e["src"] = prefix + e["src"]
+            e["tgt"] = prefix + e["tgt"]
+            edges.append(e)
+
+    return {
+        "generated": datetime.now(timezone.utc).isoformat(),
+        "namespace": _ALL_CODE_NS,
+        "meta": {"projects": present},
+        "stats": {"nodes": len(nodes), "edges": len(edges)},
+        "nodes": nodes,
+        "edges": edges,
+    }
+
+
 async def take_snapshot(mcp: MCPClient, ns: str = "kb") -> dict:
     """Снять свежий снапшот графа и отротировать previous при реальном изменении.
 
@@ -205,8 +286,9 @@ async def take_snapshot(mcp: MCPClient, ns: str = "kb") -> dict:
     Возвращает {"graph": <данные>, "diff": <изменения>} — то, что ест viewer.
     Может бросить MCPUnavailable/MCPError — вызывающий решает, что показать.
     """
-    project = _ns_project(ns)
-    if project is not None:
+    if ns == _ALL_CODE_NS:
+        data = await _all_code_graph(mcp)
+    elif (project := _ns_project(ns)) is not None:
         data = await _code_graph(mcp, project)
     else:
         raw = await mcp.call_tool("graph_export", {})
@@ -281,7 +363,7 @@ async def _api_graph(request: web.Request) -> web.Response:
         return web.json_response({"error": "unauthorized"}, status=401)
 
     ns = str(payload.get("ns", "kb")) or "kb"
-    if ns != "kb" and _ns_project(ns) is None:
+    if ns not in ("kb", _ALL_CODE_NS) and _ns_project(ns) is None:
         return web.json_response({"error": "неизвестный неймспейс"}, status=400)
     cur_name, prev_name = _snap_names(ns)
 

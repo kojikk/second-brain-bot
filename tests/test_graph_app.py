@@ -9,7 +9,8 @@ import pytest
 
 import config
 import graph_app
-from graph_app import (_build_code_graph, _diff, _ns_project, _snap_names,
+from graph_app import (_all_code_graph, _build_code_graph, _diff,
+                       _list_code_projects, _ns_project, _snap_names,
                        take_snapshot, validate_init_data)
 
 BOT_TOKEN = "123456:TEST-token"
@@ -171,6 +172,7 @@ def test_ns_project_validation():
     assert _ns_project("garbage") is None
     assert _snap_names("kb") == ("current.json", "previous.json")
     assert _snap_names("code:foo") == ("current.code-foo.json", "previous.code-foo.json")
+    assert _snap_names("code:*") == ("current.code-all.json", "previous.code-all.json")
 
 
 class _FakeReadMCP:
@@ -198,3 +200,59 @@ async def test_snapshot_code_ns(tmp_path, monkeypatch):
     # повторный снимок без изменений — ротации previous не возникает
     s2 = await take_snapshot(mcp, "code:foo")
     assert s2["diff"]["baseline"] is None
+
+
+# --- сводный вид «все проекты» (code:*) ---
+
+class _FakeAllMCP:
+    """vault_tree (список проектов) + read_file нескольких код-графов."""
+
+    def __init__(self, files: dict[str, str]):
+        self._files = files
+
+    async def call_tool(self, name: str, args: dict) -> str:
+        if name == "vault_tree":
+            assert args["path"] == "_system/graph/code"
+            children = [{"name": f"{p}.jsonl", "type": "file"} for p in self._files]
+            children.append({"name": "README.md", "type": "file"})     # не .jsonl → мимо
+            children.append({"name": "archive", "type": "dir"})         # папка → мимо
+            children.append({"name": "../evil.jsonl", "type": "file"})  # обход пути → мимо
+            return json.dumps({"name": "code", "type": "dir", "children": children})
+        if name == "read_file":
+            for p, jsonl in self._files.items():
+                if args["path"] == f"_system/graph/code/{p}.jsonl":
+                    return ('<<<UNTRUSTED_VAULT_CONTENT source="x"\nbla\n---\n'
+                            + jsonl + "\nUNTRUSTED_VAULT_CONTENT>>>")
+            raise AssertionError(args["path"])
+        raise AssertionError(name)
+
+
+@pytest.mark.asyncio
+async def test_list_code_projects_filters_and_sorts():
+    mcp = _FakeAllMCP({"foo": _code_jsonl(), "bar": _code_jsonl()})
+    assert await _list_code_projects(mcp) == ["bar", "foo"]   # мусор отсеян, сортировка
+
+
+@pytest.mark.asyncio
+async def test_all_code_graph_merges_and_clusters():
+    g = await _all_code_graph(_FakeAllMCP({"foo": _code_jsonl(), "bar": _code_jsonl()}))
+    assert g["namespace"] == "code:*"
+    assert g["meta"]["projects"] == ["bar", "foo"]
+    byid = {n["id"]: n for n in g["nodes"]}
+    # id префиксованы проектом — одинаковые пути не схлопнулись
+    assert "foo::a.py" in byid and "bar::a.py" in byid
+    assert byid["foo::a.py"]["project"] == "foo"
+    # community = проект → разные кластеры/цвета
+    assert byid["bar::a.py"]["community"] == 0 and byid["foo::a.py"]["community"] == 1
+    # рёбра тоже префиксованы и держатся внутри проекта
+    assert any(e["src"] == "foo::a.py" and e["tgt"] == "foo::a.py#f" for e in g["edges"])
+    assert g["stats"]["nodes"] == 6 and g["stats"]["edges"] == 4
+
+
+@pytest.mark.asyncio
+async def test_snapshot_all_code_ns(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "GRAPH_DIR", str(tmp_path))
+    s = await take_snapshot(_FakeAllMCP({"foo": _code_jsonl()}), "code:*")
+    assert s["graph"]["namespace"] == "code:*"
+    assert s["graph"]["meta"]["projects"] == ["foo"]
+    assert (tmp_path / "current.code-all.json").exists()
