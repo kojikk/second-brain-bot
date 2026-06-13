@@ -320,13 +320,21 @@ function codeDemoData() {
   ];
   const e = (src, tgt, rel) => ({ src, tgt, relation: rel, layer: "code", confidence: "extracted" });
   const edges = [
+    /* defines — скелет модуль→символ */
     e("worker.py", "worker.py#run_worker", "defines"), e("worker.py", "worker.py#_process", "defines"),
-    e("worker.py", "agent.py", "imports"), e("worker.py", "mcp_client.py", "imports"),
-    e("worker.py", "queue_db.py", "imports"),
     e("agent.py", "agent.py#run_loop", "defines"), e("agent.py", "agent.py#Final", "defines"),
-    e("agent.py", "mcp_client.py", "imports"),
-    e("mcp_client.py", "mcp_client.py#MCPClient", "defines"),
-    e("queue_db.py", "queue_db.py#enqueue", "defines"),
+    e("mcp_client.py", "mcp_client.py#MCPClient", "defines"), e("queue_db.py", "queue_db.py#enqueue", "defines"),
+    /* imports — зависимости модулей */
+    e("worker.py", "agent.py", "imports"), e("worker.py", "mcp_client.py", "imports"),
+    e("worker.py", "queue_db.py", "imports"), e("agent.py", "mcp_client.py", "imports"),
+    /* calls — поведение (основной сигнал) */
+    e("worker.py#run_worker", "worker.py#_process", "calls"),
+    e("worker.py#_process", "agent.py#run_loop", "calls"),
+    e("agent.py#run_loop", "mcp_client.py#MCPClient", "calls"),
+    e("worker.py#_process", "queue_db.py#enqueue", "calls"),
+    /* instantiates / references */
+    e("agent.py#run_loop", "agent.py#Final", "instantiates"),
+    e("worker.py#run_worker", "queue_db.py#enqueue", "references"),
   ];
   return {
     stale: false, namespace: CODE_NS,
@@ -478,10 +486,16 @@ function linkStyle(l) {
   const bothDim = isDim(S.byId.get(sid)) && isDim(S.byId.get(tid));
   if (bothDim) return { color: "rgba(255,255,255,0.025)", width: 0.4 };
   if (l.isNew) return { color: "rgba(111,174,138,0.75)", width: sel ? 1.8 : 1.3 };
-  if (l.layer === "code") {                /* imports — архитектура (акцент), defines — скелет (бледно) */
-    if (l.relation === "imports")
-      return { color: sel ? "rgba(143,126,224,0.9)" : "rgba(143,126,224,0.4)", width: sel ? 1.7 : 1.1 };
-    return { color: sel ? "rgba(255,255,255,0.3)" : "rgba(255,255,255,0.06)", width: sel ? 1 : 0.5 };
+  if (l.layer === "code") {
+    const r = l.relation;
+    if (r === "calls")                     /* поведение — основной сигнал (акцент) */
+      return { color: sel ? "rgba(143,126,224,0.95)" : "rgba(143,126,224,0.5)", width: sel ? 1.8 : 1.0 };
+    if (r === "imports")                    /* зависимости модулей (синий) */
+      return { color: sel ? "rgba(122,162,224,0.9)" : "rgba(122,162,224,0.42)", width: sel ? 1.7 : 1.0 };
+    if (r === "defines")                    /* скелет модуль→символ (еле виден) */
+      return { color: sel ? "rgba(255,255,255,0.22)" : "rgba(255,255,255,0.05)", width: sel ? 0.9 : 0.4 };
+    /* instantiates / extends / decorates / references — тёплый приглушённый */
+    return { color: sel ? "rgba(190,165,120,0.85)" : "rgba(190,165,120,0.34)", width: sel ? 1.4 : 0.8 };
   }
   if (l.layer === "semantic")
     return { color: sel ? "rgba(143,126,224,0.9)" : "rgba(143,126,224,0.42)", width: sel ? 1.7 : 1.1 };
@@ -565,14 +579,17 @@ function paintNode(n, ctx, k) {
 }
 
 function paintLinkLabel(l, ctx, k) {
-  /* подписываем смысловые рёбра знаний и архитектурные imports кода (не скелет defines) */
-  if (!(l.layer === "semantic" || (l.layer === "code" && l.relation === "imports"))) return;
+  const code = l.layer === "code";
+  /* знания: подписываем semantic. код: всё кроме скелета defines, но только при
+     выделении/по чипу «связи» — иначе сотни «calls» превращаются в кашу */
+  if (code) { if (l.relation === "defines") return; }
+  else if (l.layer !== "semantic") return;
   const s = l.source, t = l.target;
   if (typeof s !== "object" || typeof t !== "object") return;
   const sel = S.selected && (s.id === S.selected.id || t.id === S.selected.id);
   if (isDim(s) && isDim(t)) return;
 
-  let a = S.alwaysEdgeLabels || sel ? 1 : (k - 1.4) * 1.8;
+  let a = (S.alwaysEdgeLabels || sel) ? 1 : (code ? 0 : (k - 1.4) * 1.8);
   a = Math.max(0, Math.min(1, a));
   if (a < 0.03) return;
 
