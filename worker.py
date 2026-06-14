@@ -47,11 +47,17 @@ def _backoff(attempts: int) -> float:
 def _user_error_message(err: str) -> str:
     """Перевести исключение в дружелюбный текст для пользователя.
 
-    Частый кейс — apinet вернул 402 «Insufficient USD balance»: это не баг, а
-    пустой баланс. Не пугаем сырым JSON, а подсказываем пополнить.
+    Частый кейс — у apinet кончились средства: это не баг, а пустой баланс.
+    Не пугаем сырым JSON, а подсказываем пополнить. apinet отдаёт это двумя
+    способами: 402 «Insufficient USD balance» и 403 insufficient_user_quota
+    (не прошло предоплатное списание, текст на китайском «预扣费额度失败»).
+    Матчим по машинному коду/подстрокам, language-independent.
     """
     low = err.lower()
-    if "insufficient" in low and "balance" in low or "402" in err:
+    if (("insufficient" in low and "balance" in low)
+            or "insufficient_user_quota" in low
+            or "预扣费额度" in err
+            or "402" in err):
         return ("На балансе apinet закончились средства — пополни, "
                 "и я продолжу обработку.")
     return f"Не получилось обработать: {err}"

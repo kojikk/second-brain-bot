@@ -141,7 +141,8 @@
     box-shadow: 0 -16px 48px rgba(0,0,0,.5);
   }
   #sheet.open { transform: translateY(0); }
-  #sheet-head { padding: 10px 18px 10px; flex: none; cursor: pointer; }
+  #sheet-head { position: relative; padding: 10px 18px 10px; flex: none; cursor: pointer; }
+  #sheet-close { display: none; }
   #grip { width: 36px; height: 4px; border-radius: 2px; background: var(--border); margin: 0 auto 12px; }
   #sheet-title { font-size: 16.5px; font-weight: 650; letter-spacing: .1px; word-break: break-word; }
   #badges { display: flex; gap: 6px; margin-top: 7px; flex-wrap: wrap; }
@@ -219,6 +220,109 @@
     animation: spin .8s linear infinite;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── круглые пузыри-кнопки (мобайл): дропдаун инструментов + тоггл разброса ── */
+  .bubble {
+    flex: none; width: 38px; height: 38px; padding: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+    color: var(--muted); background: var(--panel);
+    border: 1px solid var(--border); border-radius: 50%; cursor: pointer;
+    transition: color .18s, border-color .18s, background .18s;
+  }
+  .bubble svg { width: 18px; height: 18px; display: block; }
+  .bubble:active { background: var(--accent-dim); border-color: var(--accent); }
+  .bubble.on { color: var(--text); border-color: var(--accent); background: var(--accent-dim); }
+
+  /* дропдаун инструментов — пузырь справа от поиска (проекты + показ связей) */
+  #tools-btn { display: none; }
+  #tools-menu {
+    position: absolute; top: calc(100% + 6px); right: 0; z-index: 7;
+    min-width: 190px; max-width: 76vw; padding: 8px;
+    display: none; flex-direction: column; gap: 8px;
+    background: var(--panel-solid); border: 1px solid var(--border);
+    border-radius: var(--radius); box-shadow: 0 12px 32px rgba(0,0,0,.45);
+  }
+  #tools-menu.open { display: flex; }
+  #tools-menu .chip, #tools-menu select.chip {
+    width: 100%; max-width: none; justify-content: center;
+  }
+
+  /* боковая панель «разброс»: пузырь-стрелка + широкий горизонтальный ползунок */
+  #spread-panel {
+    position: absolute; right: 0; top: 50%; transform: translateY(-50%); z-index: 5;
+    display: none; align-items: center; pointer-events: none;
+    padding-right: env(safe-area-inset-right, 0px);
+  }
+  #spread-panel > * { pointer-events: auto; }
+  #spread-wrap {
+    display: flex; flex-direction: column; gap: 8px; margin-right: 8px;
+    padding: 11px 16px; background: var(--panel);
+    border: 1px solid var(--border); border-radius: 16px;
+    box-shadow: 0 10px 28px rgba(0,0,0,.4);
+    opacity: 0; transform: translateX(14px); pointer-events: none;
+    transition: opacity .22s ease, transform .22s cubic-bezier(.32,.72,.33,1);
+  }
+  #spread-wrap .spread-label {
+    font-size: 11px; color: var(--muted); letter-spacing: .04em; text-align: center;
+  }
+  #spread-panel.open #spread-wrap { opacity: 1; transform: none; pointer-events: auto; }
+  #spread-toggle { width: 34px; height: 34px; }
+  #spread-toggle svg { transition: transform .22s ease; }
+  #spread-panel.open #spread-toggle svg { transform: rotate(180deg); }
+
+  /* ── мобильная раскладка: поиск + пузырь, ползунок сбоку, остальное в баре ── */
+  body.mobile #searchbox { display: flex; align-items: center; gap: 8px; }
+  body.mobile #search { flex: 1 1 auto; min-width: 0; }
+  body.mobile #suggest { right: 46px; }      /* не залезать под пузырь инструментов */
+  body.mobile #tools-btn { display: inline-flex; }
+  body.mobile #spread-panel { display: flex; }
+  body.mobile #spread-chip { display: none; } /* ползунок переехал в боковую панель */
+  body.mobile #spread { width: 150px; }       /* шире и горизонтальный */
+  body.mobile.sheet-open #spread-panel { display: none; } /* не мешать открытому листу */
+
+  /* ── десктоп: бар без горизонтального скролла, панель узла — сбоку ── */
+  body:not(.mobile) #searchbox { max-width: 340px; }
+  body:not(.mobile) #bar {
+    flex-wrap: wrap; overflow: visible; gap: 8px;
+    max-width: 760px;                 /* переносится, а не прокручивается */
+  }
+  body:not(.mobile) #spread { width: 104px; }
+  /* мета-статистику выносим в правый верхний угол, а не в прокручиваемый бар */
+  body:not(.mobile) #meta {
+    position: absolute; margin: 0;
+    top: calc(env(safe-area-inset-top, 0px) + 10px); right: 14px;
+  }
+
+  /* hover-аффордансы — на ПК есть курсор */
+  body:not(.mobile) #ns .seg:hover { color: var(--text); }
+  body:not(.mobile) .chip:hover { color: var(--text); border-color: #3b3b44; }
+  body:not(.mobile) .chip.on:hover { border-color: var(--accent); }
+  body:not(.mobile) .btn:hover { border-color: var(--accent); }
+  body:not(.mobile) .conn:hover .who { color: var(--accent); }
+  body:not(.mobile) #suggest .sug:hover { background: var(--panel-2); }
+
+  /* панель узла: справа на всю высоту (вместо нижнего листа) */
+  body:not(.mobile) #sheet {
+    left: auto; right: 0; top: 0; bottom: 0;
+    width: 380px; max-height: none;
+    border: 1px solid var(--border); border-right: 0;
+    border-radius: 16px 0 0 16px;
+    transform: translateX(102%);
+    box-shadow: -16px 0 48px rgba(0,0,0,.5);
+  }
+  body:not(.mobile) #sheet.open { transform: translateX(0); }
+  body:not(.mobile) #grip { display: none; }
+  body:not(.mobile) #sheet-head { padding-top: 16px; cursor: default; }
+  body:not(.mobile) #sheet-title { padding-right: 36px; }
+  body:not(.mobile) #sheet-close {
+    display: inline-flex; align-items: center; justify-content: center;
+    position: absolute; top: 12px; right: 14px; width: 30px; height: 30px; padding: 0;
+    color: var(--muted); background: var(--panel-2);
+    border: 1px solid var(--border); border-radius: 50%; cursor: pointer;
+    transition: color .18s, border-color .18s;
+  }
+  body:not(.mobile) #sheet-close:hover { color: var(--text); border-color: var(--accent); }
+  body:not(.mobile) #sheet-close svg { width: 15px; height: 15px; display: block; }
 </style>
 </head>
 <body>
@@ -227,7 +331,14 @@
 <div id="top">
   <div id="searchbox">
     <input id="search" type="search" placeholder="Найти узел…" autocomplete="off">
+    <button id="tools-btn" class="bubble" type="button" aria-label="Инструменты">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+        <line x1="4" y1="8" x2="20" y2="8"/><circle cx="15" cy="8" r="2.6" fill="var(--panel)"/>
+        <line x1="4" y1="16" x2="20" y2="16"/><circle cx="9" cy="16" r="2.6" fill="var(--panel)"/>
+      </svg>
+    </button>
     <div id="suggest"></div>
+    <div id="tools-menu"></div>
   </div>
   <div id="bar">
     <span id="ns">
@@ -248,6 +359,9 @@
 
 <div id="sheet">
   <div id="sheet-head">
+    <button id="sheet-close" type="button" aria-label="Закрыть">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
     <div id="grip"></div>
     <div id="sheet-title"></div>
     <div id="badges"></div>
@@ -257,6 +371,16 @@
     <button class="btn" id="open-note" type="button">Открыть заметку</button>
     <div id="preview"></div>
   </div>
+</div>
+
+<div id="spread-panel">
+  <div id="spread-wrap">
+    <span class="spread-label">разброс</span>
+    <!-- сюда переезжает #spread на мобайле -->
+  </div>
+  <button id="spread-toggle" class="bubble" type="button" aria-label="Разброс кластеров">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 6l-6 6 6 6"/></svg>
+  </button>
 </div>
 
 <div id="overlay"><div class="spin"></div><div id="overlay-text">Загружаю граф…</div></div>
@@ -390,7 +514,7 @@ async function loadNs(ns) {
   S.selected = null; S.term = ""; $("search").value = "";
   S.filterNew = false; S.filterTouched = false; S.projectFilter = null;
   $("chip-new").classList.remove("on"); $("chip-touched").classList.remove("on");
-  $("proj").classList.remove("on");
+  $("proj").classList.remove("on"); syncToolsBtn?.();
   $("proj").style.display = ns === CODE_ALL_NS ? "" : "none";
   $("overlay").style.display = "flex";
   $("overlay-text").textContent = ns === "kb" ? "Загружаю граф знаний…" : "Загружаю код-граф…";
@@ -427,6 +551,7 @@ function populateProjects(projects) {
 $("proj").onchange = (ev) => {
   S.projectFilter = ev.target.value || null;
   $("proj").classList.toggle("on", !!S.projectFilter);
+  syncToolsBtn?.(); $("tools-menu").classList.remove("open");
   select(null);
   if (S.projectFilter) {
     S._userMoved = false;
@@ -750,12 +875,17 @@ function paintLinkLabel(l, ctx, k) {
 
 /* ── выбор узла, лист, превью ── */
 function flyTo(n) {
-  Graph.centerAt(n.x, n.y, 650);
+  /* на ПК панель узла занимает 380px справа — смещаем центр влево,
+     чтобы выбранный узел не уходил под неё */
+  const k = S.zoom < 1.8 ? 2.1 : S.zoom;
+  const offX = document.body.classList.contains("mobile") ? 0 : 190 / k;
+  Graph.centerAt(n.x + offX, n.y, 650);
   if (S.zoom < 1.8) Graph.zoom(2.1, 650);
 }
 
 function select(n, fly) {
   S.selected = n || null;
+  document.body.classList.toggle("sheet-open", !!n);
   $("preview").style.display = "none"; $("preview").innerHTML = "";
   if (!n) { $("sheet").classList.remove("open"); return; }
   if (fly) flyTo(n);
@@ -798,7 +928,9 @@ function select(n, fly) {
   $("sheet").classList.add("open");
 }
 
-$("sheet-head").onclick = () => select(null);
+/* мобайл: тап по шапке листа закрывает; десктоп — только крестик */
+$("sheet-head").onclick = () => { if (document.body.classList.contains("mobile")) select(null); };
+$("sheet-close").onclick = (ev) => { ev.stopPropagation(); select(null); };
 
 /* markdown: [[wikilinks]] → кликабельные ссылки, frontmatter — долой */
 function renderMd(md) {
@@ -852,8 +984,42 @@ $("chip-touched").onclick = () => {
 };
 $("chip-labels").onclick = () => {
   S.alwaysEdgeLabels = !S.alwaysEdgeLabels; $("chip-labels").classList.toggle("on", S.alwaysEdgeLabels);
+  syncToolsBtn?.();
 };
 $("spread").addEventListener("input", (ev) => applySpread(+ev.target.value));
+
+/* ── адаптив: мобайл прячет проекты/связи в дропдаун, разброс — в боковую панель.
+   Десктоп оставляет всё инлайном в баре, как было. Один комплект контролов —
+   физически переносим узлы между «домами», состояние не дублируется. ── */
+const mqMobile = matchMedia("(max-width: 640px)");
+let _lastMobile = null;
+function applyLayout() {
+  const mobile = mqMobile.matches;
+  if (mobile === _lastMobile) return;   /* реальная смена раскладки — иначе ничего не трогаем */
+  _lastMobile = mobile;
+  document.body.classList.toggle("mobile", mobile);
+  if (mobile) {
+    $("tools-menu").append($("proj"), $("chip-labels"));
+    $("spread-wrap").append($("spread"));
+  } else {
+    const bar = $("bar");
+    bar.insertBefore($("proj"), $("chip-new"));
+    bar.insertBefore($("chip-labels"), $("spread-chip"));
+    $("spread-chip").append($("spread"));
+    $("tools-menu").classList.remove("open");
+    $("spread-panel").classList.remove("open");
+  }
+}
+mqMobile.addEventListener("change", applyLayout);
+applyLayout();
+
+/* пузырь подсвечивается, когда внутри дропдауна есть активный фильтр */
+function syncToolsBtn() {
+  $("tools-btn").classList.toggle("on", S.alwaysEdgeLabels || !!S.projectFilter);
+}
+$("tools-btn").onclick = (ev) => { ev.stopPropagation(); $("tools-menu").classList.toggle("open"); };
+$("tools-menu").addEventListener("click", (ev) => ev.stopPropagation());
+$("spread-toggle").onclick = () => $("spread-panel").classList.toggle("open");
 
 /* ── поиск с подсказками ── */
 const sug = $("suggest");
@@ -885,10 +1051,15 @@ $("search").addEventListener("keydown", (ev) => {
   ev.target.blur();
 });
 document.addEventListener("click", (ev) => {
-  if (!ev.target.closest("#searchbox")) sug.style.display = "none";
+  if (!ev.target.closest("#searchbox")) {
+    sug.style.display = "none";
+    $("tools-menu").classList.remove("open");
+  }
 });
 
-addEventListener("resize", () => Graph?.width(innerWidth).height(innerHeight));
+/* resize надёжнее, чем matchMedia 'change' (последний не всегда стреляет при
+   программном ресайзе/сужении окна) — раскладку пересобираем здесь тоже */
+addEventListener("resize", () => { applyLayout(); Graph?.width(innerWidth).height(innerHeight); });
 load();
 </script>
 </body>
