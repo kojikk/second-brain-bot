@@ -240,7 +240,7 @@
     <span class="chip" id="chip-labels">связи</span>
     <span class="chip" id="spread-chip" title="Разброс кластеров">
       <span style="font-size:11px;color:var(--muted)">разброс</span>
-      <input type="range" id="spread" min="1" max="3" step="0.1" value="1.4">
+      <input type="range" id="spread" min="0.4" max="5" step="0.1" value="1">
     </span>
     <span id="meta"></span>
   </div>
@@ -290,7 +290,7 @@ const S = {
   newSet: new Set(), touchedSet: new Set(), newEdges: new Set(),
   selected: null, hovered: null,
   filterNew: false, filterTouched: false, alwaysEdgeLabels: false,
-  projectFilter: null, spread: 1.4,
+  projectFilter: null, spread: 1, vp: null,
   term: "", zoom: 1,
 };
 const isCode = () => S.ns !== "kb";
@@ -447,19 +447,57 @@ const nodeR = (n) => Math.min(3 + Math.sqrt(n.degree || 1) * 1.7, 14);
 /* «Разброс»: множитель силы отталкивания и длины связей. Плотные графы (напр.
    fleetpanel, 700+ узлов) слипаются в шар — ползунок их распускает, мелкие
    кластеры почти не трогает. Базовая длина связи зависит от типа ребра. */
-const BASE_CHARGE = -190, CHARGE_MAX = 600;
+const BASE_CHARGE = -190, CHARGE_MAX_BASE = 320, PULL_BASE = 0.075;
+/* зум-зависимый рендер для тяжёлых графов: узлы перестают расти на экране выше
+   NODE_ZOOM_CAP (плотный кластер распускается при приближении), а связи кода +
+   вьюпорт-куллинг включаются с EDGE_ZOOM (рисовать все рёбра кластера разом —
+   дико лагает; на общем плане показываем форму кластеров, рёбра — при зуме). */
+const NODE_ZOOM_CAP = 1.4;
+const EDGE_ZOOM = 1.2;
 function baseLinkDistance(l) {
   return l.layer === "semantic" ? 95
        : l.layer === "code" ? (l.relation === "imports" ? 92 : 38)
        : 60;
 }
+/* притяжение к центру — держит несвязанные кластеры вместе (у графа знаний
+   между кластерами нет рёбер, без этого charge растаскивает их всё дальше, и
+   каждое изменение разброса копит дрейф). Сила обратна разбросу: меньше разброс
+   → сильнее тянет (кластеры сходятся), больше → слабее (расходятся). */
+let _pull = PULL_BASE;
+function clusterPull() {
+  let ns = [];
+  const force = (alpha) => {
+    const s = _pull * alpha;
+    for (const n of ns) { n.vx -= n.x * s; n.vy -= n.y * s; }
+  };
+  force.initialize = (nodes) => { ns = nodes; };
+  return force;
+}
 function applySpread(mult) {
   S.spread = mult;
+  _pull = PULL_BASE / mult;                       /* меньше разброс → сильнее сводит */
   if (!Graph) return;
-  Graph.d3Force("charge").strength(BASE_CHARGE * mult).distanceMax(CHARGE_MAX);
+  Graph.d3Force("charge").strength(BASE_CHARGE * mult).distanceMax(CHARGE_MAX_BASE * mult);
   const lf = Graph.d3Force("link");
   if (lf) lf.distance((l) => baseLinkDistance(l) * (1 + 0.45 * (mult - 1)));
   Graph.d3ReheatSimulation();
+}
+
+/* связь видна, если: инцидентна выбранному узлу; либо мы достаточно приблизились
+   (EDGE_ZOOM) и она в зоне видимости. Код-рёбра на общем плане прячем всегда —
+   рисовать тысячи рёбер кластера разом дико лагает; на отдалении видим форму. */
+function linkVisible(l) {
+  const s = l.source, t = l.target;
+  const sid = typeof s === "object" ? s.id : s;
+  const tid = typeof t === "object" ? t.id : t;
+  if (S.selected && (sid === S.selected.id || tid === S.selected.id)) return true;
+  if (l.layer === "code" && S.zoom < EDGE_ZOOM) return false;
+  if (S.zoom >= EDGE_ZOOM && S.vp && typeof s === "object" && typeof t === "object") {
+    const m = 70 / S.zoom;                         /* запас по краям вьюпорта */
+    if (Math.max(s.x, t.x) < S.vp.x0 - m || Math.min(s.x, t.x) > S.vp.x1 + m ||
+        Math.max(s.y, t.y) < S.vp.y0 - m || Math.min(s.y, t.y) > S.vp.y1 + m) return false;
+  }
+  return true;
 }
 
 function init(data) {
@@ -519,6 +557,7 @@ function buildGraph() {
       ctx.fillStyle = color;
       ctx.beginPath(); ctx.arc(n.x, n.y, n.r + 6, 0, 2 * Math.PI); ctx.fill();
     })
+    .linkVisibility(linkVisible)
     .linkColor((l) => linkStyle(l).color)
     .linkWidth((l) => linkStyle(l).width)
     .linkCanvasObjectMode(() => "after")
@@ -527,7 +566,15 @@ function buildGraph() {
     .onNodeHover((n) => { S.hovered = n || null; })
     .onBackgroundClick(() => select(null))
     .onNodeDragEnd((n) => { n.fx = null; n.fy = null; })  /* не прибивать узлы */
-    .onZoom(({ k }) => { S.zoom = k; })
+    .onZoom((t) => {
+      S.zoom = t.k;
+      try {                                        /* вьюпорт в мировых координатах — для куллинга рёбер */
+        const a = Graph.screen2GraphCoords(0, 0);
+        const b = Graph.screen2GraphCoords(innerWidth, innerHeight);
+        S.vp = { x0: Math.min(a.x, b.x), y0: Math.min(a.y, b.y),
+                 x1: Math.max(a.x, b.x), y1: Math.max(a.y, b.y) };
+      } catch (e) { /* до первого кадра координат ещё нет */ }
+    })
     .onEngineStop(() => fitOnce(600));
 
   /* warmupTicks уже уложил граф — показываем сразу по центру, не ждём cooldown */
@@ -539,7 +586,8 @@ function buildGraph() {
   Graph.d3Force("link")
     .strength((l) => l.layer === "semantic" ? 0.7
                    : l.layer === "code" ? (l.relation === "imports" ? 0.22 : 0.9) : 0.35);
-  Graph.d3Force("center").strength(0.04);
+  Graph.d3Force("center").strength(0.02);
+  Graph.d3Force("pull", clusterPull());   /* сводит несвязанные кластеры к центру */
   applySpread(S.spread);
 }
 
@@ -590,11 +638,14 @@ function paintNode(n, ctx, k) {
   const col = nodeColor(n);
   const a = dim ? 0.08 : 1;
   const hot = S.selected?.id === n.id || S.hovered?.id === n.id;
+  /* выше NODE_ZOOM_CAP радиус (в мире) ужимается ∝1/k → на экране узел больше не
+     растёт, и при зуме в плотный кластер узлы расходятся, а не сливаются в шар */
+  const R = n.r * Math.min(1, NODE_ZOOM_CAP / k);
 
   /* ореол новизны — мягкое внешнее кольцо */
   if (!dim && (S.newSet.has(n.id) || S.touchedSet.has(n.id))) {
     ctx.globalAlpha = 0.8;
-    ctx.beginPath(); ctx.arc(n.x, n.y, n.r + 3.5 / k + 1.2, 0, 2 * Math.PI);
+    ctx.beginPath(); ctx.arc(n.x, n.y, R + 3.5 / k + 1.2, 0, 2 * Math.PI);
     ctx.strokeStyle = S.newSet.has(n.id) ? COL.new : COL.touched;
     ctx.lineWidth = 1.6 / k; ctx.stroke();
   }
@@ -604,37 +655,37 @@ function paintNode(n, ctx, k) {
 
   if (n.kind === "code") {                 /* код: модуль — квадрат, класс — ромб, ф-я/метод — круг */
     if (n.codeKind === "module") {
-      const s = n.r * 1.7, x = n.x - s / 2, y = n.y - s / 2, rr = s * 0.3;
+      const s = R * 1.7, x = n.x - s / 2, y = n.y - s / 2, rr = s * 0.3;
       ctx.beginPath(); ctx.roundRect(x, y, s, s, rr);
       ctx.fillStyle = col; ctx.fill();
     } else if (n.codeKind === "class") {
-      const s = n.r * 1.05;
+      const s = R * 1.05;
       ctx.beginPath();
       ctx.moveTo(n.x, n.y - s); ctx.lineTo(n.x + s, n.y); ctx.lineTo(n.x, n.y + s); ctx.lineTo(n.x - s, n.y);
       ctx.closePath(); ctx.fillStyle = col; ctx.fill();
     } else {                               /* function / method */
-      ctx.beginPath(); ctx.arc(n.x, n.y, n.r, 0, 2 * Math.PI);
+      ctx.beginPath(); ctx.arc(n.x, n.y, R, 0, 2 * Math.PI);
       ctx.fillStyle = col; ctx.fill();
     }
   } else if (n.kind === "concept") {       /* пунктирный контур — страницы нет */
     ctx.setLineDash([2.5 / k, 2.5 / k]);
-    ctx.beginPath(); ctx.arc(n.x, n.y, n.r, 0, 2 * Math.PI);
+    ctx.beginPath(); ctx.arc(n.x, n.y, R, 0, 2 * Math.PI);
     ctx.strokeStyle = COL.muted; ctx.lineWidth = 1.1 / k; ctx.stroke();
     ctx.setLineDash([]);
   } else if (n.kind === "tag") {           /* ромб */
-    const s = n.r * 0.95;
+    const s = R * 0.95;
     ctx.beginPath();
     ctx.moveTo(n.x, n.y - s); ctx.lineTo(n.x + s, n.y); ctx.lineTo(n.x, n.y + s); ctx.lineTo(n.x - s, n.y);
     ctx.closePath(); ctx.fillStyle = col; ctx.fill();
   } else if (n.kind === "org") {           /* скруглённый квадрат — папка */
-    const s = n.r * 1.7, x = n.x - s / 2, y = n.y - s / 2, rr = s * 0.3;
+    const s = R * 1.7, x = n.x - s / 2, y = n.y - s / 2, rr = s * 0.3;
     ctx.beginPath(); ctx.roundRect(x, y, s, s, rr);
     ctx.fillStyle = col; ctx.fill();
   } else {                                 /* заметка — круг */
-    ctx.beginPath(); ctx.arc(n.x, n.y, n.r, 0, 2 * Math.PI);
+    ctx.beginPath(); ctx.arc(n.x, n.y, R, 0, 2 * Math.PI);
     ctx.fillStyle = col; ctx.fill();
     if (n.entity) {                        /* entity — двойное кольцо */
-      ctx.beginPath(); ctx.arc(n.x, n.y, n.r + 1.8 / k, 0, 2 * Math.PI);
+      ctx.beginPath(); ctx.arc(n.x, n.y, R + 1.8 / k, 0, 2 * Math.PI);
       ctx.strokeStyle = col; ctx.globalAlpha = a * 0.55; ctx.lineWidth = 0.9 / k; ctx.stroke();
       ctx.globalAlpha = a;
     }
@@ -642,7 +693,7 @@ function paintNode(n, ctx, k) {
   ctx.shadowBlur = 0;
 
   if (S.selected?.id === n.id) {
-    ctx.beginPath(); ctx.arc(n.x, n.y, n.r + 4 / k + 1.5, 0, 2 * Math.PI);
+    ctx.beginPath(); ctx.arc(n.x, n.y, R + 4 / k + 1.5, 0, 2 * Math.PI);
     ctx.strokeStyle = COL.accent; ctx.lineWidth = 1.6 / k; ctx.stroke();
   }
 
@@ -656,7 +707,7 @@ function paintNode(n, ctx, k) {
     ctx.font = `${11 / k}px -apple-system, system-ui, sans-serif`;
     ctx.textAlign = "center"; ctx.textBaseline = "top";
     ctx.fillStyle = COL.text;
-    ctx.fillText(n.label, n.x, n.y + n.r + 4 / k);
+    ctx.fillText(n.label, n.x, n.y + R + 4 / k);
   }
   ctx.globalAlpha = 1;
 }
