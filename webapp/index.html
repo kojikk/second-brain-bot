@@ -107,6 +107,21 @@
   }
   select.chip.on { color: var(--text); border-color: var(--accent); background-color: var(--accent-dim); }
   select.chip option { color: var(--text); background: var(--panel-solid); }
+
+  /* ползунок «разброс» — растащить плотный кластер */
+  #spread-chip { gap: 9px; cursor: default; }
+  #spread {
+    -webkit-appearance: none; appearance: none;
+    width: 76px; height: 3px; background: var(--border); border-radius: 2px; outline: none;
+  }
+  #spread::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 13px; height: 13px; border-radius: 50%;
+    background: var(--accent); cursor: pointer;
+  }
+  #spread::-moz-range-thumb {
+    width: 13px; height: 13px; border: 0; border-radius: 50%;
+    background: var(--accent); cursor: pointer;
+  }
   #meta {
     margin-left: auto; flex: none; font-size: 11.5px; color: var(--faint);
     background: var(--panel); border: 1px solid var(--border);
@@ -223,6 +238,10 @@
     <span class="chip" id="chip-new"><span class="dot" style="background:var(--new)"></span>новые <b id="n-new">0</b></span>
     <span class="chip" id="chip-touched"><span class="dot" style="background:var(--touched)"></span>изменённые <b id="n-touched">0</b></span>
     <span class="chip" id="chip-labels">связи</span>
+    <span class="chip" id="spread-chip" title="Разброс кластеров">
+      <span style="font-size:11px;color:var(--muted)">разброс</span>
+      <input type="range" id="spread" min="1" max="3" step="0.1" value="1.4">
+    </span>
     <span id="meta"></span>
   </div>
 </div>
@@ -271,7 +290,7 @@ const S = {
   newSet: new Set(), touchedSet: new Set(), newEdges: new Set(),
   selected: null, hovered: null,
   filterNew: false, filterTouched: false, alwaysEdgeLabels: false,
-  projectFilter: null,
+  projectFilter: null, spread: 1.4,
   term: "", zoom: 1,
 };
 const isCode = () => S.ns !== "kb";
@@ -425,6 +444,24 @@ function nodeColor(n) {
 }
 const nodeR = (n) => Math.min(3 + Math.sqrt(n.degree || 1) * 1.7, 14);
 
+/* «Разброс»: множитель силы отталкивания и длины связей. Плотные графы (напр.
+   fleetpanel, 700+ узлов) слипаются в шар — ползунок их распускает, мелкие
+   кластеры почти не трогает. Базовая длина связи зависит от типа ребра. */
+const BASE_CHARGE = -190, CHARGE_MAX = 600;
+function baseLinkDistance(l) {
+  return l.layer === "semantic" ? 95
+       : l.layer === "code" ? (l.relation === "imports" ? 92 : 38)
+       : 60;
+}
+function applySpread(mult) {
+  S.spread = mult;
+  if (!Graph) return;
+  Graph.d3Force("charge").strength(BASE_CHARGE * mult).distanceMax(CHARGE_MAX);
+  const lf = Graph.d3Force("link");
+  if (lf) lf.distance((l) => baseLinkDistance(l) * (1 + 0.45 * (mult - 1)));
+  Graph.d3ReheatSimulation();
+}
+
 function init(data) {
   const g = data.graph, diff = data.diff || {};
   S.newSet = new Set(diff.new_nodes || []);
@@ -497,14 +534,13 @@ function buildGraph() {
   setTimeout(() => fitOnce(500), 400);
   $("graph").addEventListener("pointerdown", () => { S._userMoved = true; }, { once: true });
 
-  /* разреженный, дышащий layout: сильнее отталкивание, длиннее связи */
-  Graph.d3Force("charge").strength(-170).distanceMax(420);
+  /* разреженный, дышащий layout. Силу отталкивания и длину связей задаёт
+     applySpread (ползунок «разброс»); здесь — только постоянная часть. */
   Graph.d3Force("link")
-    .distance((l) => l.layer === "semantic" ? 95
-                   : l.layer === "code" ? (l.relation === "imports" ? 92 : 32) : 60)
     .strength((l) => l.layer === "semantic" ? 0.7
                    : l.layer === "code" ? (l.relation === "imports" ? 0.22 : 0.9) : 0.35);
   Graph.d3Force("center").strength(0.04);
+  applySpread(S.spread);
 }
 
 function fitOnce(ms) {
@@ -766,6 +802,7 @@ $("chip-touched").onclick = () => {
 $("chip-labels").onclick = () => {
   S.alwaysEdgeLabels = !S.alwaysEdgeLabels; $("chip-labels").classList.toggle("on", S.alwaysEdgeLabels);
 };
+$("spread").addEventListener("input", (ev) => applySpread(+ev.target.value));
 
 /* ── поиск с подсказками ── */
 const sug = $("suggest");
