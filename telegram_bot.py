@@ -46,6 +46,7 @@ _think_next: set[int] = set()
 
 BOT_COMMANDS = [
     BotCommand("graph", "Интерактивный граф вольта"),
+    BotCommand("lan", "Одноразовый код входа в граф"),
     BotCommand("think", "Глубокий режим для следующего сообщения"),
     BotCommand("status", "Очередь и связь с вольтом"),
     BotCommand("usage", "Расход токенов"),
@@ -153,6 +154,21 @@ async def cmd_think(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "Следующее сообщение обработаю в глубоком режиме."
         )
+
+
+@auth
+async def cmd_lan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Код отправляется только владельцу в личном чате, никогда в группу."""
+    if not update.effective_chat or update.effective_chat.type != "private":
+        return
+    if not config.GRAPH_LAN_ORIGIN:
+        await update.message.reply_text("LAN-вход не настроен: задай GRAPH_LAN_ORIGIN.")
+        return
+    code = graph_app.issue_lan_code()
+    await update.message.reply_text(
+        f"Одноразовый код входа: {code}\n"
+        f"Действует {config.GRAPH_LAN_CODE_TTL // 60} мин. Никому не сообщай код."
+    )
 
 
 @auth
@@ -353,6 +369,7 @@ def run() -> None:
     app.add_handler(CommandHandler("think", cmd_think))
     app.add_handler(CommandHandler("sonnet", cmd_think))  # legacy-алиас
     app.add_handler(CommandHandler("graph", cmd_graph))
+    app.add_handler(CommandHandler("lan", cmd_lan))
     app.add_handler(CommandHandler("lint", cmd_lint))
     app.add_handler(CallbackQueryHandler(on_confirm, pattern=r"^c[yn]:\d+$"))
     # Голосовые/аудио — ДО обработчика вложений (иначе уйдут в «работаю с текстом»).

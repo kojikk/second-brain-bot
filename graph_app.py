@@ -19,7 +19,10 @@ import json
 import logging
 import os
 import re
+import secrets
 import time
+from collections import deque
+from urllib.parse import urlsplit
 from datetime import datetime, timezone
 from urllib.parse import parse_qsl
 
@@ -338,6 +341,108 @@ def _authorized(payload: dict) -> bool:
     return uid is not None and uid == config.TELEGRAM_ALLOWED_USER_ID
 
 
+# ─── LAN: состояние живёт только в процессе и сбрасывается при рестарте ───────
+
+_COOKIE = "graph_session"
+_code_hash = None
+_code_expires = 0.0
+_sessions: dict[str, float] = {}
+_attempts: deque[float] = deque()
+
+
+def issue_lan_code() -> str:
+    """Новый код отменяет предыдущий; plaintext не сохраняется."""
+    global _code_hash, _code_expires
+    code = str(secrets.randbelow(100_000_000)).zfill(8)
+    _code_hash = hashlib.sha256(code.encode()).digest()
+    _code_expires = time.monotonic() + config.GRAPH_LAN_CODE_TTL
+    return code
+
+
+def _lan_origin(request: web.Request) -> bool:
+    origin = config.GRAPH_LAN_ORIGIN
+    try:
+        parsed = urlsplit(origin)
+        valid = (parsed.scheme in ("http", "https") and parsed.hostname
+                 and parsed.username is None and parsed.password is None
+                 and not parsed.path and not parsed.query and not parsed.fragment
+                 and parsed.port != 0)
+    except ValueError:
+        return False
+    # Host is also checked so a DNS-rebinding host cannot reuse an allowed Origin.
+    return bool(valid and request.headers.get("Origin") == origin
+                and request.host == parsed.netloc)
+
+
+def _session_valid(request: web.Request) -> bool:
+    token = request.cookies.get(_COOKIE, "")
+    expiry = _sessions.get(token, 0)
+    if expiry <= time.monotonic():
+        _sessions.pop(token, None)
+        return False
+    return True
+
+
+def _request_authorized(request: web.Request, payload: dict) -> bool:
+    # Explicit Telegram credentials remain independent of cookies and Origin.
+    if _authorized(payload):
+        return True
+    return _lan_origin(request) and _session_valid(request)
+
+
+@web.middleware
+async def _no_store(request, handler):
+    try:
+        response = await handler(request)
+    except web.HTTPException as exc:
+        response = exc
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+async def _api_login(request: web.Request) -> web.Response:
+    global _code_hash, _code_expires
+    if not _lan_origin(request):
+        return web.json_response({"error": "forbidden"}, status=403)
+    try:
+        payload = await request.json()
+        code = payload.get("code") if isinstance(payload, dict) else None
+    except (ValueError, UnicodeDecodeError):
+        code = None
+    now = time.monotonic()
+    while _attempts and _attempts[0] <= now - 300:
+        _attempts.popleft()
+    if len(_attempts) >= 10:
+        return web.json_response({"error": "too many attempts"}, status=429)
+    _attempts.append(now)
+    digest = hashlib.sha256(code.encode()).digest() if isinstance(code, str) and re.fullmatch(r"[0-9]{8}", code) else b""
+    if not _code_hash or now >= _code_expires or not hmac.compare_digest(digest, _code_hash):
+        return web.json_response({"error": "invalid code"}, status=401)
+    _code_hash = None
+    _code_expires = 0
+    # Rotate any existing session on login.
+    _sessions.pop(request.cookies.get(_COOKIE, ""), None)
+    for token, expiry in list(_sessions.items()):
+        if expiry <= now:
+            del _sessions[token]
+    token = secrets.token_urlsafe(32)
+    _sessions[token] = now + config.GRAPH_LAN_SESSION_TTL
+    response = web.json_response({"ok": True})
+    response.set_cookie(_COOKIE, token, httponly=True, samesite="Strict", path="/",
+                        secure=config.GRAPH_LAN_ORIGIN.startswith("https://"),
+                        max_age=config.GRAPH_LAN_SESSION_TTL)
+    return response
+
+
+async def _api_logout(request: web.Request) -> web.Response:
+    if not _lan_origin(request):
+        return web.json_response({"error": "forbidden"}, status=403)
+    _sessions.pop(request.cookies.get(_COOKIE, ""), None)
+    response = web.json_response({"ok": True})
+    response.del_cookie(_COOKIE, path="/")
+    return response
+
+
 # ─── HTTP-хэндлеры ────────────────────────────────────────────────────────────
 
 async def _index(_request: web.Request) -> web.Response:
@@ -359,7 +464,9 @@ async def _api_graph(request: web.Request) -> web.Response:
         payload = await request.json()
     except json.JSONDecodeError:
         return web.json_response({"error": "bad request"}, status=400)
-    if not _authorized(payload):
+    if not isinstance(payload, dict):
+        return web.json_response({"error": "bad request"}, status=400)
+    if not _request_authorized(request, payload):
         return web.json_response({"error": "unauthorized"}, status=401)
 
     ns = str(payload.get("ns", "kb")) or "kb"
@@ -390,7 +497,9 @@ async def _api_preview(request: web.Request) -> web.Response:
         payload = await request.json()
     except json.JSONDecodeError:
         return web.json_response({"error": "bad request"}, status=400)
-    if not _authorized(payload):
+    if not isinstance(payload, dict):
+        return web.json_response({"error": "bad request"}, status=400)
+    if not _request_authorized(request, payload):
         return web.json_response({"error": "unauthorized"}, status=401)
 
     node_id = str(payload.get("node", ""))
@@ -421,10 +530,12 @@ async def _api_preview(request: web.Request) -> web.Response:
 
 async def start(mcp: MCPClient) -> web.AppRunner:
     """Поднять сервер Mini App в текущем event-loop. Возвращает runner для stop."""
-    app = web.Application()
+    app = web.Application(middlewares=[_no_store], client_max_size=16 * 1024)
     app["mcp"] = mcp
     app.add_routes([
         web.get("/", _index),
+        web.post("/api/login", _api_login),
+        web.post("/api/logout", _api_logout),
         web.post("/api/graph", _api_graph),
         web.post("/api/preview", _api_preview),
         # Вендорные библиотеки viewer'а (force-graph, marked, dompurify) —

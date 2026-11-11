@@ -6,6 +6,8 @@ import time
 from urllib.parse import urlencode
 
 import pytest
+from aiohttp import web, CookieJar
+from aiohttp.test_utils import TestClient, TestServer
 
 import config
 import graph_app
@@ -256,3 +258,66 @@ async def test_snapshot_all_code_ns(tmp_path, monkeypatch):
     assert s["graph"]["namespace"] == "code:*"
     assert s["graph"]["meta"]["projects"] == ["foo"]
     assert (tmp_path / "current.code-all.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_lan_login_session_logout_and_origin(monkeypatch, tmp_path):
+    graph_app._sessions.clear()
+    graph_app._attempts.clear()
+    monkeypatch.setattr(config, "GRAPH_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "TELEGRAM_BOT_TOKEN", BOT_TOKEN)
+    monkeypatch.setattr(config, "TELEGRAM_ALLOWED_USER_ID", 42)
+    app = web.Application(middlewares=[graph_app._no_store])
+    app["mcp"] = _FakeMCP([_export([], "now"), _export([], "now")])
+    app.router.add_post('/api/login', graph_app._api_login)
+    app.router.add_post('/api/logout', graph_app._api_logout)
+    app.router.add_post('/api/graph', graph_app._api_graph)
+    app.router.add_post('/api/preview', graph_app._api_preview)
+    async with TestClient(TestServer(app), cookie_jar=CookieJar(unsafe=True)) as client:
+        origin = str(client.make_url('/')).rstrip('/')
+        monkeypatch.setattr(config, 'GRAPH_LAN_ORIGIN', origin)
+        headers = {'Origin': origin}
+        code = graph_app.issue_lan_code()
+        assert (await client.post('/api/login', json={'code': code})).status == 403
+        assert (await client.post('/api/login', json={'code': '0000000x'}, headers=headers)).status == 401
+        response = await client.post('/api/login', json={'code': code}, headers=headers)
+        assert response.status == 200 and response.headers['Cache-Control'] == 'no-store'
+        assert 'HttpOnly' in response.headers['Set-Cookie'] and 'SameSite=Strict' in response.headers['Set-Cookie']
+        assert (await client.post('/api/login', json={'code': code}, headers=headers)).status == 401
+        assert (await client.post('/api/graph', json={}, headers={'Origin': 'http://evil.test'})).status == 401
+        assert (await client.post('/api/graph', json={}, headers=headers)).status == 200
+        assert (await client.post('/api/preview', json={'node': 'absent'}, headers=headers)).status == 404
+        assert (await client.post('/api/logout', headers={'Origin': 'http://evil.test'})).status == 403
+        assert (await client.post('/api/logout', headers=headers)).status == 200
+        assert (await client.post('/api/graph', json={}, headers=headers)).status == 401
+        # Existing Telegram Mini App remains usable without Origin.
+        assert (await client.post('/api/graph', json={'initData': _make_init_data(42)})).status == 200
+
+
+@pytest.mark.asyncio
+async def test_lan_expiry_rate_limit_and_new_code(monkeypatch):
+    graph_app._sessions.clear()
+    graph_app._attempts.clear()
+    clock = [100.0]
+    monkeypatch.setattr(graph_app.time, 'monotonic', lambda: clock[0])
+    app = web.Application(middlewares=[graph_app._no_store])
+    app.router.add_post('/api/login', graph_app._api_login)
+    async with TestClient(TestServer(app), cookie_jar=CookieJar(unsafe=True)) as client:
+        origin = str(client.make_url('/')).rstrip('/')
+        monkeypatch.setattr(config, 'GRAPH_LAN_ORIGIN', origin)
+        headers = {'Origin': origin}
+        old = graph_app.issue_lan_code()
+        new = graph_app.issue_lan_code()
+        if old != new:
+            assert (await client.post('/api/login', json={'code': old}, headers=headers)).status == 401
+        clock[0] += config.GRAPH_LAN_CODE_TTL
+        assert (await client.post('/api/login', json={'code': new}, headers=headers)).status == 401
+        graph_app._attempts.clear()
+        for _ in range(10):
+            assert (await client.post('/api/login', json={'code': 'bad'}, headers=headers)).status == 401
+        assert (await client.post('/api/login', json={'code': graph_app.issue_lan_code()}, headers=headers)).status == 429
+        clock[0] += 300
+        assert (await client.post('/api/login', json={'code': graph_app.issue_lan_code()}, headers=headers)).status == 200
+        clock[0] += config.GRAPH_LAN_SESSION_TTL
+        request = type('Request', (), {'cookies': {graph_app._COOKIE: next(iter(graph_app._sessions))}})()
+        assert not graph_app._session_valid(request)

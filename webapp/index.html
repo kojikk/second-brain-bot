@@ -5,7 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>Граф вольта</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
-<script src="/vendor/force-graph.min.js"></script>
+<script type="module">
+import * as THREE from '/vendor/three.module.min.js';
+window.THREE = THREE;
+window.dispatchEvent(new Event('three-ready'));
+</script>
 <script src="/vendor/marked.min.js"></script>
 <script src="/vendor/purify.min.js"></script>
 <style>
@@ -220,6 +224,17 @@
     animation: spin .8s linear infinite;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
+  #login-form { width: min(100%, 340px); text-align: left; }
+  #login-form[hidden], #logout[hidden] { display: none; }
+  #login-form label { display: block; margin-bottom: 8px; color: var(--text); }
+  #login-code {
+    width: 100%; min-height: 44px; padding: 10px 12px; font-size: 16px;
+    color: var(--text); background: var(--panel-solid); border: 1px solid var(--border);
+    border-radius: var(--radius); outline: none;
+  }
+  #login-code:focus { border-color: var(--accent); }
+  #login-error { min-height: 1.5em; margin-top: 8px; color: var(--danger); overflow-wrap: anywhere; }
+  #logout { min-height: 38px; font-family: inherit; }
 
   /* ── круглые пузыри-кнопки (мобайл): дропдаун инструментов + тоггл разброса ── */
   .bubble {
@@ -353,6 +368,7 @@
       <span style="font-size:11px;color:var(--muted)">разброс</span>
       <input type="range" id="spread" min="0.4" max="5" step="0.1" value="1">
     </span>
+    <button class="chip" id="logout" type="button" hidden>Выйти</button>
     <span id="meta"></span>
   </div>
 </div>
@@ -383,8 +399,16 @@
   </button>
 </div>
 
-<div id="overlay"><div class="spin"></div><div id="overlay-text">Загружаю граф…</div></div>
+<div id="overlay"><div class="spin"></div><div id="overlay-text">Загружаю граф…</div>
+  <form id="login-form" hidden>
+    <label for="login-code">Код доступа</label>
+    <input id="login-code" type="password" inputmode="numeric" pattern="[0-9]{8}" maxlength="8" autocomplete="one-time-code" required>
+    <div id="login-error" role="alert" aria-live="polite"></div>
+    <button class="btn" id="login-submit" type="submit">Войти</button>
+  </form>
+</div>
 
+<script src="/vendor/graph3d.js"></script>
 <script>
 "use strict";
 const tg = window.Telegram?.WebApp;
@@ -423,12 +447,63 @@ let Graph = null;
 /* ── данные ── */
 async function api(path, body) {
   const r = await fetch(path, {
-    method: "POST", headers: { "Content-Type": "application/json" },
+    method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ initData: tg?.initData || "", ...body }),
   });
-  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || ("HTTP " + r.status));
+  if (!r.ok) {
+    const error = new Error((await r.json().catch(() => ({}))).error || ("HTTP " + r.status));
+    error.status = r.status;
+    throw error;
+  }
   return r.json();
 }
+
+function showLogin(message = "Введите код доступа для входа в локальной сети.") {
+  $("overlay").style.display = "flex";
+  document.querySelector(".spin").style.display = "none";
+  $("overlay-text").textContent = message;
+  $("login-error").textContent = "";
+  $("login-form").hidden = false;
+  $("logout").hidden = true;
+}
+
+$("login-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const button = $("login-submit");
+  button.disabled = true;
+  $("login-error").textContent = "";
+  try {
+    const r = await fetch("/api/login", {
+      method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: $("login-code").value }),
+    });
+    if (!r.ok) {
+      $("login-error").textContent = r.status === 401
+        ? "Неверный или просроченный код доступа."
+        : r.status === 403 ? "Доступ с этого адреса не настроен на сервере."
+        : r.status === 429 ? "Слишком много попыток. Попробуйте позже."
+        : "Не удалось войти (HTTP " + r.status + "). Попробуйте ещё раз.";
+      return;
+    }
+    $("login-code").value = "";
+    $("login-form").hidden = true;
+    await loadNs(S.ns);
+  } catch (_) {
+    $("login-error").textContent = "Не удалось связаться с сервером. Проверьте соединение.";
+  } finally { button.disabled = false; }
+});
+
+$("logout").addEventListener("click", async () => {
+  const button = $("logout");
+  button.disabled = true;
+  try {
+    const r = await fetch("/api/logout", { method: "POST", credentials: "same-origin" });
+    if (!r.ok) throw new Error();
+    showLogin("Вы вышли. Введите код доступа для повторного входа.");
+  } catch (_) {
+    alert("Не удалось выйти. Проверьте соединение и попробуйте ещё раз.");
+  } finally { button.disabled = false; }
+});
 
 function demoData() {
   const mk = (id, kind, community, degree, entity) =>
@@ -517,6 +592,7 @@ async function loadNs(ns) {
   $("proj").classList.remove("on"); syncToolsBtn?.();
   $("proj").style.display = ns === CODE_ALL_NS ? "" : "none";
   $("overlay").style.display = "flex";
+  $("login-form").hidden = true;
   $("overlay-text").textContent = ns === "kb" ? "Загружаю граф знаний…" : "Загружаю код-граф…";
   document.querySelector(".spin").style.display = "";
   try {
@@ -524,10 +600,14 @@ async function loadNs(ns) {
       ? (ns === "kb" ? demoData() : codeDemoData())
       : await api("/api/graph", ns === "kb" ? {} : { ns });
     init(data);
+    $("logout").hidden = DEMO || !!tg?.initData;
     $("overlay").style.display = "none";
   } catch (e) {
-    $("overlay-text").textContent = "Не получилось: " + e.message;
-    document.querySelector(".spin").style.display = "none";
+    if (e.status === 401 && !DEMO && !tg?.initData) showLogin();
+    else {
+      $("overlay-text").textContent = "Не удалось загрузить граф: " + e.message;
+      document.querySelector(".spin").style.display = "none";
+    }
   }
 }
 
@@ -602,10 +682,7 @@ function applySpread(mult) {
   S.spread = mult;
   _pull = PULL_BASE / mult;                       /* меньше разброс → сильнее сводит */
   if (!Graph) return;
-  Graph.d3Force("charge").strength(BASE_CHARGE * mult).distanceMax(CHARGE_MAX_BASE * mult);
-  const lf = Graph.d3Force("link");
-  if (lf) lf.distance((l) => baseLinkDistance(l) * (1 + 0.45 * (mult - 1)));
-  Graph.d3ReheatSimulation();
+  if (Graph) Graph.layout(mult);
 }
 
 /* связь видна, если: инцидентна выбранному узлу; либо мы достаточно приблизились
@@ -635,12 +712,12 @@ function init(data) {
   S.byId = new Map(S.nodes.map((n) => [n.id, n]));
   S.links = g.edges
     .filter((e) => S.byId.has(e.src) && S.byId.has(e.tgt))
-    .map((e) => ({ source: e.src, target: e.tgt, relation: e.relation,
+    .map((e) => ({ source: S.byId.get(e.src), target: S.byId.get(e.tgt), relation: e.relation,
                    layer: e.layer, isNew: S.newEdges.has(e.src + "|" + e.tgt) }));
   S.neighbors = new Map(S.nodes.map((n) => [n.id, new Set()]));
   for (const l of S.links) {
-    S.neighbors.get(l.source).add(l.target);
-    S.neighbors.get(l.target).add(l.source);
+    S.neighbors.get(l.source.id).add(l.target.id);
+    S.neighbors.get(l.target.id).add(l.source.id);
   }
 
   $("n-new").textContent = S.newSet.size;
@@ -667,7 +744,7 @@ function init(data) {
 }
 
 /* ── force-graph: плавная d3-физика вместо самописной ── */
-function buildGraph() {
+function unusedLegacyBuildGraph() {
   Graph = ForceGraph()($("graph"))
     .graphData({ nodes: S.nodes, links: S.links })
     .backgroundColor(COL.bg)
@@ -875,12 +952,7 @@ function paintLinkLabel(l, ctx, k) {
 
 /* ── выбор узла, лист, превью ── */
 function flyTo(n) {
-  /* на ПК панель узла занимает 380px справа — смещаем центр влево,
-     чтобы выбранный узел не уходил под неё */
-  const k = S.zoom < 1.8 ? 2.1 : S.zoom;
-  const offX = document.body.classList.contains("mobile") ? 0 : 190 / k;
-  Graph.centerAt(n.x + offX, n.y, 650);
-  if (S.zoom < 1.8) Graph.zoom(2.1, 650);
+  Graph.focus(n);
 }
 
 function select(n, fly) {
@@ -966,12 +1038,17 @@ $("open-note").onclick = async () => {
     const r = DEMO
       ? { content: "# Демо\nПревью с **markdown**, `кодом` и [[Знания/AI/RAG|вики-ссылкой]].\n> и цитатой", truncated: false }
       : await api("/api/preview", { node: n.id });
+    $("preview").style.color = "";
     $("preview").innerHTML = renderMd(r.content) +
       (r.truncated ? '<div class="trunc">… показано начало заметки</div>' : "");
     $("preview").style.display = "block";
   } catch (e) {
-    $("preview").innerHTML = `<span style="color:var(--danger)">Не получилось: ${e.message}</span>`;
-    $("preview").style.display = "block";
+    if (e.status === 401 && !DEMO && !tg?.initData) showLogin("Сессия истекла. Введите код доступа снова.");
+    else {
+      $("preview").textContent = "Не удалось открыть заметку: " + e.message;
+      $("preview").style.color = "var(--danger)";
+      $("preview").style.display = "block";
+    }
   } finally { btn.disabled = false; btn.textContent = "Открыть заметку"; }
 };
 
@@ -1060,7 +1137,7 @@ document.addEventListener("click", (ev) => {
 /* resize надёжнее, чем matchMedia 'change' (последний не всегда стреляет при
    программном ресайзе/сужении окна) — раскладку пересобираем здесь тоже */
 addEventListener("resize", () => { applyLayout(); Graph?.width(innerWidth).height(innerHeight); });
-load();
+window.addEventListener('three-ready', load, { once: true });
 </script>
 </body>
 </html>

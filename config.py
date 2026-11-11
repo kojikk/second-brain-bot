@@ -64,6 +64,11 @@ GRAPH_DIR        = os.getenv("GRAPH_DIR", "/app/data/graph")
 GRAPH_CODE_PROJECT = os.getenv("GRAPH_CODE_PROJECT", "second-brain-bot")
 # Свежесть auth-подписи Mini App (initData) в секундах.
 GRAPH_AUTH_MAX_AGE = int(os.getenv("GRAPH_AUTH_MAX_AGE", str(24 * 3600)))
+# Точный origin LAN-интерфейса, например http://192.168.1.9:8090.
+# Пустое значение отключает LAN-вход.
+GRAPH_LAN_ORIGIN = os.getenv("GRAPH_LAN_ORIGIN", "")
+GRAPH_LAN_CODE_TTL = 300
+GRAPH_LAN_SESSION_TTL = 12 * 3600
 
 # ─── Надёжность / очередь ─────────────────────────────────────────────────────
 QUEUE_DB_PATH      = os.getenv("QUEUE_DB_PATH", "/app/data/queue.db")
